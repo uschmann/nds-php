@@ -1078,6 +1078,7 @@ typedef struct {
 	int   nparams, nrequired, nlocals;
 	int   firstCallLine;
 	Value defs[PARAMS_MAX];
+	char (*localNames)[NAME_MAX_LEN + 1];  /* for the debugger             */
 	int   ncaps;                       /* closure: captured variables      */
 	unsigned char capSlot[CAPS_MAX];   /* their local slots                */
 } Func;
@@ -1113,9 +1114,12 @@ static void fail(const char *fmt, ...) {
 	longjmp(errjmp, 1);
 }
 
+static int lineOverride = -1;       /* >= 0: line for the next instructions */
+
 static void emit(int w) {
 	if (ncode >= CODE_MAX) fail("Program too large");
-	codeLine[ncode] = (unsigned short)(tok.line < 0 ? 0 : tok.line);
+	int l = lineOverride >= 0 ? lineOverride : tok.line;
+	codeLine[ncode] = (unsigned short)(l < 0 ? 0 : l);
 	code[ncode++] = w;
 }
 static void emit2(int a, int b) { emit(a); emit(b); }
@@ -1183,6 +1187,12 @@ static VarRef resolve_var(const char *name) {
 }
 
 /* --- functions --- */
+
+static void save_local_names(Func *fn, const Scope *sc) {
+	free(fn->localNames);
+	fn->localNames = sc->n ? malloc(sc->n * sizeof *fn->localNames) : NULL;
+	if (fn->localNames) memcpy(fn->localNames, sc->names, sc->n * sizeof *fn->localNames);
+}
 
 static int func_index(const char *name, int create) {
 	char low[NAME_MAX_LEN + 1];
@@ -1956,7 +1966,16 @@ static void compile_if(void) {
 	} else patch(jf);
 }
 
+/* jump back to the loop head, counted as the line of the loop head (so
+ * the debugger shows the loop line again, not the line after the loop) */
+static void emit_loop_back(int target, int headLine) {
+	lineOverride = headLine;
+	emit2(OP_JMP, target);
+	lineOverride = -1;
+}
+
 static void compile_while(void) {
+	int head = tok.line;
 	advance();
 	int top = ncode;
 	expect("(");
@@ -1965,7 +1984,7 @@ static void compile_while(void) {
 	int jf = emit_jump(OP_JZ);
 	push_loop(0, 0);
 	block_or_statement();
-	emit2(OP_JMP, top);
+	emit_loop_back(top, head);
 	patch(jf);
 	pop_loop(ncode, top);
 }
@@ -1987,6 +2006,7 @@ static void compile_do(void) {
 }
 
 static void compile_for(void) {
+	int head = tok.line;
 	advance();
 	expect("(");
 	if (!is_op(";")) do { expr(); emit(OP_POP); } while (accept(","));
@@ -2009,12 +2029,13 @@ static void compile_for(void) {
 	patch(jb);
 	push_loop(0, 0);
 	block_or_statement();
-	emit2(OP_JMP, stepL);
+	emit_loop_back(stepL, head);
 	if (jf >= 0) patch(jf);
 	pop_loop(ncode, stepL);
 }
 
 static void compile_foreach(void) {
+	int head = tok.line;
 	advance();
 	expect("(");
 	expr();
@@ -2043,7 +2064,7 @@ static void compile_foreach(void) {
 	emit(OP_POP);
 	push_loop(2, 0);
 	block_or_statement();
-	emit2(OP_JMP, top);
+	emit_loop_back(top, head);
 	patch(jEnd);
 	pop_loop(ncode, top);
 	emit(OP_POP);
@@ -2351,7 +2372,9 @@ static void compile_function(void) {
 	int f = func_index(tok.s, 1);
 	if (funcs[f].addr >= 0) fail("Cannot redeclare %s()", tok.s);
 	advance();
+	lineOverride = 0;                      /* jumping over a body: no line of its own */
 	int skip = emit_jump(OP_JMP);
+	lineOverride = -1;
 	Scope sc;
 	memset(&sc, 0, sizeof sc);
 	sc.isMethod = 0;
@@ -2364,6 +2387,7 @@ static void compile_function(void) {
 	fn->addr = ncode;                      /* allows recursion */
 	params_and_body(fn, -1, 1);
 	fn->nlocals = sc.n;
+	save_local_names(fn, &sc);
 	scope = saved;
 	loopBase = savedLoopBase;
 	tryBase = savedTryBase;
@@ -2376,7 +2400,9 @@ static void compile_closure(int arrow) {
 	accept("&");
 	int f = new_func("{closure}");
 	closuresMade++;
+	lineOverride = 0;                      /* jumping over a body: no line of its own */
 	int skip = emit_jump(OP_JMP);
+	lineOverride = -1;
 	Scope sc;
 	memset(&sc, 0, sizeof sc);
 	sc.isMethod = scope ? scope->isMethod : 0;
@@ -2390,6 +2416,7 @@ static void compile_closure(int arrow) {
 	fn->addr = ncode;
 	params_and_body(fn, -1, arrow ? 2 : 3);
 	fn->nlocals = sc.n;
+	save_local_names(fn, &sc);
 	fn->ncaps = sc.ncap;
 	memcpy(fn->capSlot, sc.capSlot, sizeof sc.capSlot);
 	scope = saved;
@@ -2420,7 +2447,9 @@ static void compile_method(int c, int vis, int isStatic, int isAbstract) {
 	snprintf(display, sizeof display, "%s::%s", k->name, mname);
 	int f = new_func(display);
 	Func *fn = &funcs[f];
+	lineOverride = 0;
 	int skip = isAbstract ? -1 : emit_jump(OP_JMP);
+	lineOverride = -1;
 	Scope sc;
 	memset(&sc, 0, sizeof sc);
 	sc.isMethod = !isStatic;
@@ -2432,6 +2461,7 @@ static void compile_method(int c, int vis, int isStatic, int isAbstract) {
 	fn->addr = ncode;
 	params_and_body(fn, !strcasecmp(mname, "__construct") ? c : -1, !isAbstract);
 	fn->nlocals = sc.n;
+	save_local_names(fn, &sc);
 	scope = saved;
 	loopBase = savedLoopBase;
 	tryBase = savedTryBase;
@@ -2729,7 +2759,9 @@ static int compile_source(const char *src, int file) {
 	if (file >= 0) { memset(included, 0, sizeof included); included[file] = 1; }
 	advance();
 	while (tok.t != TK_EOF) statement();
+	lineOverride = 0;                      /* end of the program: no line */
 	emit(OP_END);
+	lineOverride = -1;
 	for (int i = 0; i < nfuncs; i++)
 		if (funcs[i].addr < 0) {
 			errLine = funcs[i].firstCallLine;
@@ -2748,6 +2780,7 @@ typedef struct {
 	Value thisv;                  /* $this or null                       */
 	short cls, scls;              /* class context (self), called class (static) */
 	char  ctor;                   /* constructor: returns $this          */
+	int   dbgLine;                /* debugger: line last started here    */
 } Frame;
 
 static Value stack[STACK_MAX];
@@ -2765,6 +2798,49 @@ static int     nhandlers;
 static Value   pendingExc;                 /* thrown, not caught yet       */
 static int     excPending;
 static int     throwableClass = -1;        /* class index of Throwable     */
+
+/* debugger: breakpoint bits per file and line index, step requests */
+static unsigned char bpBits[MAX_SRC][(MAX_LINES + 7) / 8];
+static int nbreakpoints;
+static int dbgMode = -1;                   /* BASIC_DBG_* while stepping, -1 = none */
+static int dbgFrames;                      /* frame depth when the step started    */
+
+static int bp_test(int f, int i) {
+	return f >= 0 && f < MAX_SRC && i >= 0 && i < MAX_LINES && (bpBits[f][i >> 3] >> (i & 7) & 1);
+}
+static void bp_set(int f, int i, int on) {
+	if (f < 0 || f >= MAX_SRC || i < 0 || i >= MAX_LINES || bp_test(f, i) == !!on) return;
+	bpBits[f][i >> 3] ^= (unsigned char)(1 << (i & 7));
+	nbreakpoints += on ? 1 : -1;
+}
+/* lines inserted (+1) or deleted (-1) at index i: breakpoints move along */
+static void bp_shift(int f, int i, int d) {
+	if (f < 0 || f >= MAX_SRC || !nbreakpoints) return;
+	if (d > 0) {
+		for (int k = MAX_LINES - 1; k > i; k--) bp_set(f, k, bp_test(f, k - 1));
+		bp_set(f, i, 0);
+	} else {
+		for (int k = i; k < MAX_LINES - 1; k++) bp_set(f, k, bp_test(f, k + 1));
+		bp_set(f, MAX_LINES - 1, 0);
+	}
+}
+
+/* before an instruction: does a new line start here where we must stop? */
+static int dbg_check(void) {
+	int ln = codeLine[pc];
+	if (ln <= 0 || pc >= progCode) return 0;      /* REPL lines, built-in classes */
+	Frame *fr = &frames[nframes - 1];
+	if (ln == fr->dbgLine) return 0;              /* still the same line here    */
+	fr->dbgLine = ln;
+	int stop = bp_test(ln >> 10, (ln & 1023) - 1) || dbgMode == BASIC_DBG_STEP ||
+	           (dbgMode == BASIC_DBG_OVER && nframes <= dbgFrames) ||
+	           (dbgMode == BASIC_DBG_OUT && nframes < dbgFrames);
+	if (!stop) return 0;
+	state = BASIC_PAUSED;
+	dbgMode = -1;
+	curPc = pc;
+	return 1;
+}
 
 static void push(Value v) {
 	if (sp >= STACK_MAX) { release(v); fail("Stack overflow"); }
@@ -3040,6 +3116,7 @@ static void enter_func(int f, int argc, Value thisv, int cls, int scls, int ctor
 	fr->cls = (short)cls;
 	fr->scls = (short)scls;
 	fr->ctor = (char)ctor;
+	fr->dbgLine = 0;
 	pc = fn->addr;
 }
 
@@ -3246,6 +3323,7 @@ static Value obj_to_str(Value v) {
 
 static void end_program(void) {
 	state = BASIC_IDLE;
+	dbgMode = -1;
 	vm_reset();
 }
 
@@ -5695,7 +5773,7 @@ static void reset_code(void) {
 	nconst = 0;
 	ncode = 0;
 	for (int i = 0; i < nfuncs; i++)
-		for (int k = 0; k < funcs[i].nparams; k++) release(funcs[i].defs[k]);
+		{ for (int k = 0; k < funcs[i].nparams; k++) release(funcs[i].defs[k]); free(funcs[i].localNames); funcs[i].localNames = NULL; }
 	nfuncs = 0;
 	for (int i = 0; i < nclasses; i++) free_class(&classes[i]);
 	nclasses = 0;
@@ -5713,7 +5791,7 @@ static void reset_direct_code(void) {
 	nconst = keepConst;
 	ncode = keepCode;
 	for (int i = keepFuncs; i < nfuncs; i++)
-		for (int k = 0; k < funcs[i].nparams; k++) release(funcs[i].defs[k]);
+		{ for (int k = 0; k < funcs[i].nparams; k++) release(funcs[i].defs[k]); free(funcs[i].localNames); funcs[i].localNames = NULL; }
 	nfuncs = keepFuncs;
 	for (int i = progClasses; i < nclasses; i++) free_class(&classes[i]);
 	nclasses = progClasses;
@@ -5733,6 +5811,7 @@ static void clear_files(void) {
 	curFile = 0;
 	strcpy(fileNames[0], "main.php");
 	filesVersion++;
+	basic_clear_breakpoints();
 	modified = 0;
 }
 
@@ -5766,6 +5845,7 @@ int basic_insert_line(int i, const char *text) {
 	memmove(&lines[i + 1], &lines[i], (nlines - i) * sizeof(Line));
 	lines[i].text = c;
 	nlines++;
+	bp_shift(curFile, i, 1);
 	renumber(i);
 	modified = 1;
 	return 1;
@@ -5786,6 +5866,7 @@ void basic_delete_line(int i) {
 	free(lines[i].text);
 	memmove(&lines[i], &lines[i + 1], (nlines - i - 1) * sizeof(Line));
 	nlines--;
+	bp_shift(curFile, i, -1);
 	renumber(i);
 	modified = 1;
 }
@@ -6027,6 +6108,7 @@ static void cmd_load(const char *arg) {
 			fclose(fp);
 		}
 		filesVersion++;
+	basic_clear_breakpoints();
 		modified = 0;
 		strcpy(lastFile, name);
 		snprintf(msg, sizeof msg, "LOADED %s (%d FILE%s)", name, nsrc, nsrc == 1 ? "" : "S");
@@ -6182,6 +6264,7 @@ static void cmd_edit(const char *arg) {
 		strcpy(fileNames[f], name);
 		fileCount[f] = 0;
 		filesVersion++;
+	basic_clear_breakpoints();
 		modified = 1;
 	}
 	curFile = f;
@@ -6214,6 +6297,7 @@ static void cmd_rmfile(const char *arg) {
 	fileCount[nsrc] = 0;
 	if (curFile >= f) curFile = curFile > 0 ? curFile - 1 : 0;
 	filesVersion++;
+	basic_clear_breakpoints();
 	modified = 1;
 	snprintf(msg, sizeof msg, "REMOVED %s", name);
 	message(msg);
@@ -6235,6 +6319,7 @@ static void cmd_rename(const char *arg) {
 	snprintf(msg, sizeof msg, "RENAMED %s TO %s", fileNames[f], b);
 	strcpy(fileNames[f], b);
 	filesVersion++;
+	basic_clear_breakpoints();
 	modified = 1;
 	message(msg);
 }
@@ -6254,6 +6339,7 @@ static void start_vm(int addr) {
 	frames[0].thisv = mk_null();
 	frames[0].cls = frames[0].scls = -1;
 	frames[0].ctor = 0;
+	frames[0].dbgLine = 0;
 	nframes = 1;
 	pc = curPc = addr;
 	state = BASIC_RUNNING;
@@ -6372,6 +6458,7 @@ static void report_error(void) {
 	out_ch('\n');
 	vm_reset();
 	state = BASIC_IDLE;
+	dbgMode = -1;
 	waitFrames = waitSound = waitTone = 0;
 }
 
@@ -6448,7 +6535,9 @@ int basic_run_slice(int maxStatements) {
 		waitTone = 0;
 	}
 	int limit = maxStatements * 32;
+	int dbg = nbreakpoints > 0 || dbgMode >= 0;
 	while (done < limit && state == BASIC_RUNNING && waitFrames == 0 && !waitSound && !waitTone) {
+		if (dbg && dbg_check()) break;
 		exec_one();
 		done++;
 	}
@@ -6483,6 +6572,7 @@ void basic_break(void) {
 	vm_reset();
 	pendingCmd[0] = 0;
 	state = BASIC_IDLE;
+	dbgMode = -1;
 	waitFrames = waitSound = waitTone = 0;
 }
 
@@ -6517,3 +6607,95 @@ int basic_has_storage(void) { return storageDir[0] != 0; }
 const char *basic_storage_dir(void) { return storageDir; }
 const char *basic_program_name(void) { return lastFile; }
 int basic_modified(void) { return modified && (nsrc > 1 || fileCount[0] > 0); }
+
+/* ------------------------------------------------------------------ */
+/* debugger                                                            */
+/* ------------------------------------------------------------------ */
+
+void basic_toggle_breakpoint(int f, int i) { bp_set(f, i, !bp_test(f, i)); }
+int  basic_breakpoint(int f, int i) { return bp_test(f, i); }
+void basic_clear_breakpoints(void) { memset(bpBits, 0, sizeof bpBits); nbreakpoints = 0; }
+void basic_debug_step_next(void) { dbgMode = BASIC_DBG_STEP; }
+
+void basic_debug_resume(int mode) {
+	if (state != BASIC_PAUSED) return;
+	dbgMode = mode == BASIC_DBG_CONTINUE ? -1 : mode;
+	dbgFrames = nframes;
+	state = BASIC_RUNNING;
+}
+
+int basic_debug_location(int *file, int *index) {
+	if (state != BASIC_PAUSED || pc < 0 || pc >= ncode || codeLine[pc] <= 0) return 0;
+	*file = codeLine[pc] >> 10;
+	*index = (codeLine[pc] & 1023) - 1;
+	return 1;
+}
+
+const char *basic_debug_function(void) {
+	if (state != BASIC_PAUSED || nframes < 1) return "";
+	int f = frames[nframes - 1].func;
+	return f >= 0 ? funcs[f].name : "{main}";
+}
+
+/* short text of a value for the variable view */
+static void dbg_fmt(Value v, char *out, int size, int depth) {
+	char t[48];
+	int n = 0;
+	switch (v.t) {
+	case T_NULL: snprintf(out, size, "null"); return;
+	case T_BOOL: snprintf(out, size, v.u.i ? "true" : "false"); return;
+	case T_INT: snprintf(out, size, "%d", v.u.i); return;
+	case T_FLOAT: fmt_float(t, v.u.f); snprintf(out, size, "%s%s", t, strpbrk(t, ".EN") ? "" : ".0"); return;
+	case T_STR: snprintf(out, size, "\"%.*s\"", size - 3 > v.u.s->len ? v.u.s->len : size - 3, v.u.s->s); return;
+	case T_OBJ: snprintf(out, size, "%s#%d", classes[v.u.o->cls].name, v.u.o->id); return;
+	case T_CLO: snprintf(out, size, "Closure"); return;
+	case T_ARR: {
+		Arr *a = v.u.a;
+		int list = 1;
+		for (int i = 0; i < a->n && list; i++) list = a->e[i].key.t == T_INT && a->e[i].key.u.i == i;
+		if (depth > 0) { snprintf(out, size, "[%d]", a->n); return; }
+		n = snprintf(out, size, "[");
+		for (int i = 0; i < a->n && n < size - 1; i++) {
+			char item[40];
+			dbg_fmt(a->e[i].val, item, sizeof item, depth + 1);
+			if (list) n += snprintf(out + n, size - n, "%s%s", i ? ", " : "", item);
+			else {
+				char key[24];
+				dbg_fmt(a->e[i].key, key, sizeof key, depth + 1);
+				n += snprintf(out + n, size - n, "%s%s=>%s", i ? ", " : "", key, item);
+			}
+		}
+		if (n < size - 1) snprintf(out + n, size - n, "]");
+		return;
+	}
+	default: snprintf(out, size, "?");
+	}
+}
+
+int basic_debug_vars(BasicVar *out, int max) {
+	if (state != BASIC_PAUSED || nframes < 1) return 0;
+	int n = 0;
+	Frame *fr = &frames[nframes - 1];
+	if (fr->thisv.t == T_OBJ && n < max) {
+		snprintf(out[n].name, sizeof out[n].name, "this");
+		dbg_fmt(fr->thisv, out[n].value, sizeof out[n].value, 0);
+		out[n++].global = 0;
+	}
+	if (fr->func >= 0 && funcs[fr->func].localNames)
+		for (int i = 0; i < funcs[fr->func].nlocals && n < max; i++) {
+			snprintf(out[n].name, sizeof out[n].name, "%.23s", funcs[fr->func].localNames[i]);
+			dbg_fmt(stack[fr->base + i], out[n].value, sizeof out[n].value, 0);
+			out[n++].global = 0;
+		}
+	for (int i = 0; i < nglobals && n < max; i++) {
+		snprintf(out[n].name, sizeof out[n].name, "%.23s", globalNames[i]);
+		dbg_fmt(globals[i], out[n].value, sizeof out[n].value, 0);
+		out[n++].global = 1;
+	}
+	return n;
+}
+
+int basic_file_line_count(int f) { return f >= 0 && f < nsrc ? fileCount[f] : 0; }
+const char *basic_file_line_text(int f, int i) {
+	return f >= 0 && f < nsrc && i >= 0 && i < fileCount[f] ? fileLines[f][i].text : "";
+}

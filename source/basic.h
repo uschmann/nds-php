@@ -42,7 +42,8 @@ typedef struct {
 typedef enum {
 	BASIC_IDLE = 0,
 	BASIC_RUNNING,
-	BASIC_INPUT
+	BASIC_INPUT,
+	BASIC_PAUSED             /* debugger: stopped at a breakpoint or step */
 } BasicState;
 
 typedef enum {
@@ -131,5 +132,22 @@ int         basic_line_count(void);
 int         basic_line_number(int index);
 const char *basic_line_text(int index);
 int         basic_find_index(int lineNum); /* first index with num >= lineNum */
+
+/* debugger: breakpoints are line indexes (0 = first line) of a file. A
+ * program running with breakpoints (or a step request) stops in
+ * BASIC_PAUSED before the first instruction of such a line. */
+enum { BASIC_DBG_CONTINUE, BASIC_DBG_STEP, BASIC_DBG_OVER, BASIC_DBG_OUT };
+void        basic_toggle_breakpoint(int file, int index);
+int         basic_breakpoint(int file, int index);
+void        basic_clear_breakpoints(void);
+void        basic_debug_step_next(void);      /* next RUN stops at the first line */
+void        basic_debug_resume(int mode);     /* while paused: BASIC_DBG_*      */
+int         basic_debug_location(int *file, int *index); /* paused at? 0 = no */
+const char *basic_debug_function(void);       /* "{main}", "foo", "Cls::m"      */
+typedef struct { char name[24]; char value[64]; unsigned char global; } BasicVar;
+int         basic_debug_vars(BasicVar *out, int max);  /* locals, then globals */
+/* lines of any file (the editor functions above use the selected one) */
+int         basic_file_line_count(int file);
+const char *basic_file_line_text(int file, int index);
 
 #endif

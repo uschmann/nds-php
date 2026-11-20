@@ -1,0 +1,30 @@
+[PAUSED line 2 in sq: $x=1 $r=null g:$total=0 g:$n=1 g:$a=null g:$list=null]
+[PAUSED line 2 in sq: $x=2 $r=null g:$total=1 g:$n=2 g:$a=null g:$list=null]
+[PAUSED line 2 in sq: $x=3 $r=null g:$total=5 g:$n=3 g:$a=null g:$list=null]
+total 14
+end
+[PAUSED line 7 in {main}: g:$total=0 g:$n=1 g:$a=null g:$list=null]
+[PAUSED line 2 in sq: $x=1 $r=null g:$total=0 g:$n=1 g:$a=null g:$list=null]
+[PAUSED line 3 in sq: $x=1 $r=1 g:$total=0 g:$n=1 g:$a=null g:$list=null]
+[PAUSED line 4 in sq: $x=1 $r=1 g:$total=0 g:$n=1 g:$a=null g:$list=null]
+[PAUSED line 6 in {main}: g:$total=1 g:$n=1 g:$a=null g:$list=null]
+[PAUSED line 7 in {main}: g:$total=1 g:$n=2 g:$a=null g:$list=null]
+[PAUSED line 6 in {main}: g:$total=5 g:$n=2 g:$a=null g:$list=null]
+[PAUSED line 7 in {main}: g:$total=5 g:$n=3 g:$a=null g:$list=null]
+Break in line 7
+total 14
+[PAUSED line 12 in {main}: g:$total=14 g:$n=3 g:$a=Acc#2 g:$list=null]
+[PAUSED line 10 in Acc::add: $this=Acc#2 $v=5 g:$total=14 g:$n=3 g:$a=Acc#2 g:$list=null]
+[PAUSED line 10 in Acc::add: $this=Acc#2 $v=7 g:$total=14 g:$n=3 g:$a=Acc#2 g:$list=null]
+[PAUSED line 13 in {main}: g:$total=14 g:$n=3 g:$a=Acc#2 g:$list=null]
+[PAUSED line 14 in {main}: g:$total=14 g:$n=3 g:$a=Acc#2 g:$list=["x"=>1.5, "y"=>"text", "z"=>[2]]]
+end
+[PAUSED line 5 in {main}: g:$total=null g:$n=null g:$a=null g:$list=null]
+[PAUSED line 6 in {main}: g:$total=0 g:$n=null g:$a=null g:$list=null]
+[PAUSED line 7 in {main}: g:$total=0 g:$n=1 g:$a=null g:$list=null]
+total 14
+end
+total 14
+[PAUSED line 14 in {main}: g:$total=14 g:$n=3 g:$a=Acc#4 g:$list=["x"=>1.5, "y"=>"text", "z"=>[2]]]
+end
+16

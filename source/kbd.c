@@ -119,6 +119,8 @@ static void layout(void) {
 static char tabNames[TAB_MAX][13] = { "main.php" };
 static int  tabCount = 1, tabCur, tabX[TAB_MAX + 1], tabW[TAB_MAX + 1], tabIdx[TAB_MAX + 1], tabShown;
 
+#define DBG_X 224
+
 static void draw_tabs(void) {
 	fill(0, 0, 256, 22, COL_PAGE);
 	/* small accent tile with "<>" */
@@ -127,9 +129,14 @@ static void draw_tabs(void) {
 	fill(4, 18, 1, 1, COL_PAGE); fill(19, 18, 1, 1, COL_PAGE);
 	glyph(5, 7, '<', C(31, 31, 31), 1);
 	glyph(11, 7, '>', C(31, 31, 31), 1);
+	/* "DBG" tile on the right: debugger */
+	fill(DBG_X, 3, 28, 16, COL_KEY_FN);
+	fill(DBG_X, 3, 1, 1, COL_PAGE); fill(DBG_X + 27, 3, 1, 1, COL_PAGE);
+	fill(DBG_X, 18, 1, 1, COL_PAGE); fill(DBG_X + 27, 18, 1, 1, COL_PAGE);
+	text(DBG_X + 2, 7, "DBG", COL_ACCENT, 1);
 	fill(0, 21, 256, 1, COL_LINE);
 
-	const int x0 = 24, plusW = 18, maxX = 252 - plusW;
+	const int x0 = 24, plusW = 18, maxX = DBG_X - 4 - plusW;
 	int w[TAB_MAX];
 	for (int i = 0; i < tabCount; i++) {
 		int l = 0;
@@ -176,6 +183,7 @@ void kbd_set_tabs(const char *const *names, int count, int current) {
 static int hit_tab(int px, int py) {
 	if (py >= 22) return KC_NONE;
 	if (px < 22) return KC_BROWSER;
+	if (px >= DBG_X - 2) return KC_DEBUG;
 	for (int i = 0; i <= tabShown; i++)
 		if (px >= tabX[i] && px < tabX[i] + tabW[i]) return tabIdx[i] < 0 ? KC_TABNEW : KC_TAB + tabIdx[i];
 	return KC_NONE;

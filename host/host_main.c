@@ -1,6 +1,9 @@
 /* host_main.c - run the PHP interpreter on a PC terminal (for testing).
  * Build: make -C host   Usage: BASIC_DIR=/tmp/x ./host/basic < program.txt
  * Lines "NN code" are appended to the program, all others run as REPL lines.
+ * Debugger: "#BP n" toggles a breakpoint on program line n (main.php),
+ * "#DEBUG" makes the next RUN stop at the first line. While paused, input
+ * lines are debugger commands: s(tep), o(ver), u (out), c(ontinue), q(uit).
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,9 +45,29 @@ int main(void) {
 			if (!basic_insert_line(basic_line_count(), sp)) printf("?LINE ERROR\n");
 			continue;
 		}
+		if (!strncmp(line, "#BP ", 4)) { basic_toggle_breakpoint(0, atoi(line + 4) - 1); continue; }
+		if (!strcmp(line, "#DEBUG")) { basic_debug_step_next(); continue; }
 		int r = basic_enter(line, NULL);
 		if (r == BASIC_ENTER_ERROR) printf("?BUSY\n");
 		while (basic_state() != BASIC_IDLE) {
+			if (basic_state() == BASIC_PAUSED) {
+				int f, i;
+				BasicVar v[32];
+				basic_debug_location(&f, &i);
+				printf("[PAUSED line %d in %s:", i + 1, basic_debug_function());
+				int nv = basic_debug_vars(v, 32);
+				for (int k = 0; k < nv; k++) printf(" %s$%s=%s", v[k].global ? "g:" : "", v[k].name, v[k].value);
+				printf("]\n");
+				if (!fgets(line, sizeof line, stdin)) { basic_break(); break; }
+				switch (line[0]) {
+				case 's': basic_debug_resume(BASIC_DBG_STEP); break;
+				case 'o': basic_debug_resume(BASIC_DBG_OVER); break;
+				case 'u': basic_debug_resume(BASIC_DBG_OUT); break;
+				case 'q': basic_break(); break;
+				default: basic_debug_resume(BASIC_DBG_CONTINUE);
+				}
+				continue;
+			}
 			if (basic_state() == BASIC_INPUT) {
 				if (!fgets(line, sizeof line, stdin)) { basic_break(); break; }
 				line[strcspn(line, "\r\n")] = 0;

@@ -415,6 +415,29 @@ and the start of `main.php`.
 
 If the program in memory changed since the last `SAVE`/`LOAD`, `LOAD` asks before replacing it.
 
+### Debugger
+
+Tapping `DBG` on the right of the tab bar replaces the keyboard with the debugger. It shows the code
+of the file; tapping a line sets or clears a breakpoint there (red dot, red line number in the
+editor). When the program reaches a breakpoint it stops before that line: the line is marked at the
+bottom and the top screen lists the variables – first the locals of the running function (with
+`$this`), then the globals, arrays and objects in short form.
+
+| Button | Effect |
+|---|---|
+| `RUN` / `CONT` (START) | start the program or let it run on to the next breakpoint |
+| `STEP` (A) | next line, also into called functions; without a running program: start and stop at the first line; while the program runs: pause it |
+| `OVER` (X) | next line, function calls run through |
+| `OUT` (Y) | run until the function returns to its caller |
+| `STOP` | break the program |
+| `ABC` (B) | back to the keyboard (breakpoints stay) |
+| ↑ ↓ | scroll the code |
+| L / R, SELECT | scroll the variables, switch the top screen between variables and output |
+
+Breakpoints also work with a normal `RUN`; the debugger then opens by itself. When the program waits
+for `input()`, the keyboard comes back. Code in callbacks of `usort`, `array_map` etc. runs through
+without stopping.
+
 ## Examples
 
 The [`examples/`](examples/) folder contains ready-made programs, each as a folder. To try them, copy

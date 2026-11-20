@@ -24,6 +24,7 @@
 #include "hwspr.h"
 #include "browser.h"
 #include "lang.h"
+#include "dbg.h"
 
 #define COLS 32
 #define ROWS 24
@@ -651,7 +652,8 @@ static void render_edit(int *cx, int *cy) {
 		for (; sub < rows && row < CODE_TOP + CODE_ROWS; sub++, row++) {
 			if (sub == 0) {
 				snprintf(buf, sizeof buf, "%*d", gw - 1, line + 1);
-				scr_text(&edit, 0, row, buf, line == curLine ? RED : GREY, NOFILL);
+				if (basic_breakpoint(basic_current_file(), line)) scr_text(&edit, 0, row, buf, WHITE, RED);
+				else scr_text(&edit, 0, row, buf, line == curLine ? RED : GREY, NOFILL);
 			}
 			for (int c = 0; c < tw; c++) {
 				int idx = sub * tw + c;
@@ -1110,6 +1112,101 @@ static void sound_editor_frame(u32 down, u32 rep, bool touching, int px, int py)
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* debugger: panel on the bottom screen, variables on the top screen   */
+/* ------------------------------------------------------------------ */
+
+#define MAX_VARS 96
+static bool dbgOpen, dbgReopen, varShowOutput;
+static int  varTop;
+static Screen varScr;
+static BasicVar vars[MAX_VARS];
+
+static void open_debugger(void) {
+	dbgOpen = true;
+	helpOpen = false;
+	if (basic_state() == BASIC_IDLE) view = VIEW_EDIT;
+	varTop = 0;
+	varShowOutput = false;
+	dbgp_open(basic_current_file());
+}
+
+static void close_debugger(void) {
+	dbgOpen = false;
+	kbd_redraw();
+}
+
+/* variables of the paused program: locals of the running function first */
+static void render_vars(void) {
+	char buf[64];
+	scr_clear(&varScr, TEXTCOL);
+	for (int x = 0; x < COLS; x++) scr_put(&varScr, x, 0, ' ', BAR_FG, BAR_BG);
+	int f = 0, i = 0;
+	basic_debug_location(&f, &i);
+	snprintf(buf, sizeof buf, L(" PAUSE %s:%d", " PAUSED %s:%d"), basic_file_name(f), i + 1);
+	scr_text(&varScr, 0, 0, buf, BAR_FG, BAR_BG);
+	const char *fn = basic_debug_function();
+	scr_text(&varScr, COLS - 1 - (int)strlen(fn), 0, fn, BAR_FG, BAR_BG);
+
+	int n = basic_debug_vars(vars, MAX_VARS);
+	/* lines: section titles and variables */
+	int total = 0, row = 1 - varTop, prevGlobal = -1;
+	for (int k = 0; k < n; k++) {
+		if (vars[k].global != prevGlobal) {
+			prevGlobal = vars[k].global;
+			if (row >= 1 && row < ROWS - 1)
+				scr_text(&varScr, 0, row, vars[k].global ? L("GLOBAL", "GLOBALS") : L("LOKAL", "LOCALS"), GREY, NOFILL);
+			row++;
+			total++;
+		}
+		if (row >= 1 && row < ROWS - 1) {
+			snprintf(buf, sizeof buf, "$%.23s", vars[k].name);
+			int nl = (int)strlen(buf);
+			scr_text(&varScr, 1, row, buf, BLUE, NOFILL);
+			scr_text(&varScr, 1 + nl, row, " =", GREY, NOFILL);
+			char val[40];
+			int room = COLS - 4 - nl;
+			if (room < 4) room = 4;
+			snprintf(val, sizeof val, "%.*s", room, vars[k].value);
+			scr_text(&varScr, 4 + nl, row, val, TEXTCOL, NOFILL);
+		}
+		row++;
+		total++;
+	}
+	if (n == 0) scr_text(&varScr, 1, 2, L("KEINE VARIABLEN", "NO VARIABLES"), GREY, NOFILL);
+	if (varTop > 0 && varTop > total - (ROWS - 2)) varTop = total > ROWS - 2 ? total - (ROWS - 2) : 0;
+	for (int x = 0; x < COLS; x++) scr_put(&varScr, x, STATUS_ROW, ' ', FOOT_FG, FOOT_BG);
+	scr_text(&varScr, 0, STATUS_ROW, L("A:SCHRITT L/R:BL\x84TTERN SEL:AUSG", "A:STEP L/R:SCROLL SEL:OUTPUT"), FOOT_FG, FOOT_BG);
+}
+
+static void run_program(void);
+
+static void debugger_frame(u32 down, u32 rep, bool touching, int px, int py) {
+	BasicState st = basic_state();
+	int act = dbgp_poll(touching, px, py, down, rep);
+	switch (act) {
+	case DBA_CLOSE: close_debugger(); return;
+	case DBA_RUN:
+		if (st == BASIC_PAUSED) { basic_debug_resume(BASIC_DBG_CONTINUE); varShowOutput = false; }
+		else if (st == BASIC_IDLE) run_program();
+		break;
+	case DBA_STEP: case DBA_OVER: case DBA_OUT: {
+		int mode = act == DBA_STEP ? BASIC_DBG_STEP : act == DBA_OVER ? BASIC_DBG_OVER : BASIC_DBG_OUT;
+		if (st == BASIC_PAUSED) basic_debug_resume(mode);
+		else if (st == BASIC_IDLE) { basic_debug_step_next(); run_program(); }
+		else basic_debug_step_next();        /* running: pause at the next line */
+		break;
+	}
+	case DBA_STOP:
+		if (st != BASIC_IDLE) { basic_break(); snd_stop(); }
+		break;
+	}
+	if (rep & KEY_L) varTop = varTop > 10 ? varTop - 10 : 0;
+	if (rep & KEY_R) varTop += 10;
+	if ((down & KEY_SELECT) && st == BASIC_PAUSED) varShowOutput = !varShowOutput;
+	if (dbgOpen) dbgp_update();
+}
+
 static void video_init(void) {
 	videoSetMode(MODE_5_2D);
 	vramSetBankA(VRAM_A_MAIN_BG);
@@ -1221,7 +1318,14 @@ int main(int argc, char *argv[]) {
 		} else inInput = false;
 
 		BasicState st = basic_state();
-		kbd_set_running(st != BASIC_IDLE);
+		/* debugger: opens by itself at a breakpoint; input() needs the keyboard */
+		if (st == BASIC_PAUSED && !dbgOpen && !spredOpen && !sndedOpen && !browserOpen) open_debugger();
+		if (st == BASIC_INPUT && dbgOpen) { close_debugger(); dbgReopen = true; }
+		if (dbgReopen && (st == BASIC_RUNNING || st == BASIC_PAUSED || st == BASIC_IDLE)) {
+			dbgReopen = false;
+			if (st != BASIC_IDLE && !dbgOpen) open_debugger();
+		}
+		if (!dbgOpen) kbd_set_running(st != BASIC_IDLE);
 		sync_file();
 
 		/* console idle: show the REPL prompt */
@@ -1244,7 +1348,9 @@ int main(int argc, char *argv[]) {
 			sound_editor_frame(down, rep, touching, tp.px, tp.py);
 			continue;
 		}
-		if (browserOpen) {
+		if (dbgOpen) {
+			debugger_frame(down, rep, touching, tp.px, tp.py);
+		} else if (browserOpen) {
 			browser_frame(down, rep, touching, tp.px, tp.py);
 		} else {
 			{
@@ -1280,6 +1386,8 @@ int main(int argc, char *argv[]) {
 			} else if (k >= KC_TAB && k < KC_TAB + BASIC_PROJECT_FILES) {
 				/* file tab: open that file in the editor */
 				if (st == BASIC_IDLE) { select_file(k - KC_TAB); view = VIEW_EDIT; }
+			} else if (k == KC_DEBUG) {
+				open_debugger();
 			} else if (k == KC_BROWSER) {
 			if (st == BASIC_IDLE) { helpOpen = false; open_browser(); }
 		} else if (k == KC_TABNEW) {
@@ -1336,7 +1444,12 @@ int main(int argc, char *argv[]) {
 		/* --- render top screen --- */
 		bool blink = (frameCount & 32) == 0;
 		int cx = -1, cy = -1;
-		if (browserOpen) {
+		bool varsShown = dbgOpen && basic_state() == BASIC_PAUSED && !varShowOutput;
+		if (varsShown) {
+			bgHide(gfxBg);
+			render_vars();
+			scr_upload(&varScr, -1, -1);
+		} else if (browserOpen) {
 			render_browser();
 		} else if (helpOpen) {
 			render_help();
@@ -1355,8 +1468,8 @@ int main(int argc, char *argv[]) {
 			}
 			scr_upload(&term, cx, cy);
 		}
-		hwspr_update(!helpOpen && !browserOpen && view == VIEW_OUTPUT);
-		if (!browserOpen) update_status_panel();
+		hwspr_update(!helpOpen && !browserOpen && !varsShown && view == VIEW_OUTPUT);
+		if (!browserOpen && !dbgOpen) update_status_panel();
 	}
 	return 0;
 }

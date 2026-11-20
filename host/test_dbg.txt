@@ -1,0 +1,14 @@
+10 function sq($x) {
+20   $r = $x * $x;
+30   return $r;
+40 }
+50 $total = 0;
+60 foreach ([1, 2, 3] as $n) {
+70   $total += sq($n);
+80 }
+90 echo "total $total", PHP_EOL;
+100 class Acc { private $sum = 0; public function add($v) { $this->sum += $v; return $this; } }
+110 $a = new Acc();
+120 $a->add(5)->add(7);
+130 $list = ['x' => 1.5, 'y' => "text", 'z' => [1, 2]];
+140 echo "end", PHP_EOL;

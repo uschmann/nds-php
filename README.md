@@ -425,6 +425,29 @@ Programms mit seinen Dateien und dem Anfang von `main.php`.
 Ist das Programm im Speicher seit dem letzten `SAVE`/`LOAD` geändert, fragt `LADEN` vor dem Ersetzen
 nach.
 
+### Debugger
+
+Ein Tipp auf `DBG` rechts in der Reiterleiste ersetzt die Tastatur durch den Debugger. Er zeigt den
+Code der Datei; ein Tipp auf eine Zeile setzt oder löscht dort einen Haltepunkt (roter Punkt, im
+Editor rote Zeilennummer). Läuft das Programm auf einen Haltepunkt, hält es vor dieser Zeile an:
+unten ist die Zeile markiert, oben stehen die Variablen – erst die lokalen der laufenden Funktion
+(mit `$this`), dann die globalen, Arrays und Objekte in Kurzform.
+
+| Knopf | Wirkung |
+|---|---|
+| `RUN` / `CONT` (START) | Programm starten bzw. bis zum nächsten Haltepunkt weiterlaufen lassen |
+| `STEP` (A) | nächste Zeile, auch in aufgerufene Funktionen hinein; ohne laufendes Programm: starten und in der ersten Zeile anhalten; während das Programm läuft: anhalten |
+| `OVER` (X) | nächste Zeile, Funktionsaufrufe laufen durch |
+| `OUT` (Y) | bis zurück zum Aufrufer der Funktion |
+| `STOP` | Programm abbrechen |
+| `ABC` (B) | zurück zur Tastatur (die Haltepunkte bleiben) |
+| ↑ ↓ | Code blättern |
+| L / R, SELECT | Variablen blättern, oben zwischen Variablen und Ausgabe umschalten |
+
+Haltepunkte gelten auch beim normalen `RUN`; der Debugger öffnet sich dann von selbst. Wartet das
+Programm auf `input()`, kommt die Tastatur zurück. Code in Callbacks von `usort`, `array_map` usw.
+läuft ohne Halt durch.
+
 ## Beispiele
 
 Im Ordner [`examples/`](examples/) liegen fertige Programme, jeweils als Ordner. Zum Ausprobieren

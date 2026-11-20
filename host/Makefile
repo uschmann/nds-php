@@ -88,5 +88,14 @@ test-exc: basic
 	diff -u test_exc.expected test.out && echo "exception test passed"
 	rm -f test.out
 
+# debugger: breakpoints, step / over / out, variables (host commands #BP, #DEBUG)
+test-dbg: basic
+	(cat test_dbg.txt; echo '#BP 2'; echo RUN; echo c; echo c; echo c; echo '#BP 2'; echo '#BP 7'; echo RUN; \
+	 echo s; echo s; echo s; echo s; echo s; echo o; echo o; echo q; echo '#BP 7'; echo '#BP 12'; echo RUN; \
+	 echo s; echo s; echo o; echo s; echo c; echo '#BP 12'; echo '#DEBUG'; echo RUN; echo o; echo o; \
+	 echo u; echo '#BP 14'; echo RUN; echo c; echo 'echo sq(4), PHP_EOL;') | ./basic > test.out
+	diff -u test_dbg.expected test.out && echo "debugger test passed"
+	rm -f test.out
+
 clean:
 	rm -f basic test.out
