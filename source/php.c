@@ -41,6 +41,7 @@
 #define FUNCS_MAX    256
 #define LOCALS_MAX   64
 #define PARAMS_MAX   8
+#define CAPS_MAX     16          /* captured variables of a closure */
 #define NAME_MAX_LEN 31
 #define LOOPS_MAX    16
 #define JUMPS_MAX    64
@@ -95,15 +96,17 @@ static void fail(const char *fmt, ...) __attribute__((noreturn, format(printf, 1
 /* values                                                              */
 /* ------------------------------------------------------------------ */
 
-enum { T_NULL = 0, T_BOOL, T_INT, T_FLOAT, T_STR, T_ARR, T_APPEND, T_OBJ, T_PNAME };
-/* T_PNAME: property name on the stack (path element of $a->b) */
+enum { T_NULL = 0, T_BOOL, T_INT, T_FLOAT, T_STR, T_ARR, T_APPEND, T_OBJ, T_PNAME, T_CLO };
+/* T_PNAME: property name on the stack (path element of $a->b)
+ * T_CLO: closure (function or fn) with its captured variables */
 
 typedef struct Str { int rc, len; char s[1]; } Str;
 typedef struct Arr Arr;
 typedef struct Obj Obj;
+typedef struct Clo Clo;
 typedef struct Value {
 	unsigned char t;
-	union { int i; float f; Str *s; Arr *a; Obj *o; } u;
+	union { int i; float f; Str *s; Arr *a; Obj *o; Clo *c; } u;
 } Value;
 typedef struct { Value key, val; } Entry;
 struct Arr { int rc, n, cap, next; Entry *e; };
@@ -138,16 +141,29 @@ static void obj_free(Obj *o);
 /* objects are handles: assignment shares the object */
 struct Obj { int rc, cls, id, nprops; Arr *dyn; Value props[1]; };
 
+/* closures share like objects; use[] are the captured values, thisv and
+ * cls/scls the class context they were created in */
+struct Clo { int rc, func, id, nuse; short cls, scls; Value thisv; Value use[1]; };
+static void clo_free(Clo *c);
+
 static inline void retain(Value v) {
 	if (v.t == T_STR || v.t == T_PNAME) v.u.s->rc++;
 	else if (v.t == T_ARR) v.u.a->rc++;
 	else if (v.t == T_OBJ) v.u.o->rc++;
+	else if (v.t == T_CLO) v.u.c->rc++;
 }
 
 static void release(Value v) {
 	if (v.t == T_STR || v.t == T_PNAME) { if (--v.u.s->rc == 0) free(v.u.s); }
 	else if (v.t == T_ARR) { if (--v.u.a->rc == 0) arr_free(v.u.a); }
 	else if (v.t == T_OBJ) { if (--v.u.o->rc == 0) obj_free(v.u.o); }
+	else if (v.t == T_CLO) { if (--v.u.c->rc == 0) clo_free(v.u.c); }
+}
+
+static void clo_free(Clo *c) {
+	for (int i = 0; i < c->nuse; i++) release(c->use[i]);
+	release(c->thisv);
+	free(c);
 }
 
 /* --- arrays: ordered maps with int or string keys --- */
@@ -553,6 +569,7 @@ static const char *sval(Value v, int *len) {
 	case T_FLOAT: b = bufs[k++ & 3]; *len = fmt_float(b, v.u.f); return b;
 	case T_BOOL:  *len = v.u.i ? 1 : 0; return v.u.i ? "1" : "";
 	case T_ARR:   *len = 5; return "Array";
+	case T_CLO:   fail("Object of class Closure could not be converted to string");
 	case T_OBJ: {
 		/* __toString(); the string is kept until 4 more conversions */
 		static Value hold[4];
@@ -628,6 +645,7 @@ static Value to_num(Value v) {
 		return mk_int(0);
 	case T_ARR: fail("Unsupported operand types: array");
 	case T_OBJ: fail("Unsupported operand types: %s", classes[v.u.o->cls].name);
+	case T_CLO: fail("Unsupported operand types: Closure");
 	default: return mk_int(0);
 	}
 }
@@ -656,7 +674,7 @@ static int to_bool(Value v) {
 	case T_FLOAT: return v.u.f != 0;
 	case T_STR: return !(v.u.s->len == 0 || (v.u.s->len == 1 && v.u.s->s[0] == '0'));
 	case T_ARR: return v.u.a->n != 0;
-	case T_OBJ: return 1;
+	case T_OBJ: case T_CLO: return 1;
 	default: return 0;
 	}
 }
@@ -705,6 +723,7 @@ static int loose_cmp(Value a, Value b) {
 	if (a.t == T_ARR && b.t == T_ARR) return arr_cmp(a.u.a, b.u.a);
 	if (a.t == T_ARR) return 1;
 	if (b.t == T_ARR) return -1;
+	if (a.t == T_CLO || b.t == T_CLO) return a.t == b.t && a.u.c == b.u.c ? 0 : 1;
 	if (a.t == T_OBJ || b.t == T_OBJ) {
 		/* same object, or same class with equal properties */
 		if (a.t != T_OBJ || b.t != T_OBJ || a.u.o->cls != b.u.o->cls) return 1;
@@ -743,6 +762,7 @@ static int strict_eq(Value a, Value b) {
 			    !strict_eq(a.u.a->e[i].val, b.u.a->e[i].val)) return 0;
 		return 1;
 	case T_OBJ: return a.u.o == b.u.o;
+	case T_CLO: return a.u.c == b.u.c;
 	}
 	return 0;
 }
@@ -1019,13 +1039,16 @@ enum {
 	OP_ECHO, OP_ARR_NEW, OP_ARR_PUSH, OP_ARR_SET,
 	OP_FE_INIT, OP_FE_NEXT,
 	OP_CALL, OP_CALLB, OP_CALLREF, OP_RET, OP_EXIT,
-	OP_NEW, OP_MCALL, OP_SCALL, OP_CCONST, OP_CLSNAME, OP_INSTOF, OP_CLONE, OP_TOPNAME
+	OP_NEW, OP_MCALL, OP_SCALL, OP_CCONST, OP_CLSNAME, OP_INSTOF, OP_CLONE, OP_TOPNAME,
+	OP_CLOSURE,                   /* func ncaps: closure from the captured values */
+	OP_CALLV                      /* argc: call the value below the arguments  */
 };
 
 /* class references in the bytecode: index, or these for self / static / parent */
 #define CREF_SELF   -1
 #define CREF_STATIC -2
 #define CREF_PARENT -3
+#define CREF_CLOSURE -4            /* instanceof Closure */
 /* VarRef scopes: 0 local, 1 global, 2 $this, >= SC_STATIC: static property
  * of class (scope - SC_STATIC + CREF bias), slot = name in the constant pool */
 #define SC_STATIC   10
@@ -1042,6 +1065,8 @@ typedef struct {
 	int   nparams, nrequired, nlocals;
 	int   firstCallLine;
 	Value defs[PARAMS_MAX];
+	int   ncaps;                       /* closure: captured variables      */
+	unsigned char capSlot[CAPS_MAX];   /* their local slots                */
 } Func;
 static Func funcs[FUNCS_MAX];
 static int  nfuncs;
@@ -1052,6 +1077,9 @@ static int   nglobals;
 
 /* what the RUN-compiled program occupies; direct lines go behind it */
 static int progCode, progConst, progFuncs, progClasses;
+/* REPL lines that create closures stay in memory (the closures may live on
+ * in variables); the next REPL line is compiled behind them */
+static int keepCode, keepConst, keepFuncs, closuresMade;
 static int directCompile;          /* compiling a REPL line */
 
 static int compiling;
@@ -1098,6 +1126,11 @@ typedef struct {
 	char globals[16][NAME_MAX_LEN + 1];
 	int  ng;
 	int  isMethod;                     /* $this is available */
+	/* closures: captured names and their local slots; an arrow function
+	 * (fn) captures every outer variable its body uses */
+	char caps[CAPS_MAX][NAME_MAX_LEN + 1];
+	unsigned char capSlot[CAPS_MAX];
+	int  ncap, arrow, capturing;
 } Scope;
 static Scope *scope;              /* NULL = top level (globals)            */
 
@@ -1107,6 +1140,12 @@ static int global_slot(const char *name) {
 	strcpy(globalNames[nglobals], name);
 	globals[nglobals] = mk_null();
 	return nglobals++;
+}
+
+static void add_capture(const char *name, int slot) {
+	if (scope->ncap >= CAPS_MAX) fail("Too many captured variables");
+	strcpy(scope->caps[scope->ncap], name);
+	scope->capSlot[scope->ncap++] = (unsigned char)slot;
 }
 
 static VarRef resolve_var(const char *name) {
@@ -1125,6 +1164,7 @@ static VarRef resolve_var(const char *name) {
 	if (scope->n >= LOCALS_MAX) fail("Too many local variables");
 	strcpy(scope->names[scope->n], name);
 	r.slot = scope->n++;
+	if (scope->arrow && scope->capturing) add_capture(name, r.slot);
 	return r;
 }
 
@@ -1238,6 +1278,7 @@ static char included[BASIC_PROJECT_FILES];
 
 static void rvalue_postfix(void);
 static void call_args(int *argc);
+static void compile_closure(int arrow);
 
 /* path behind a variable: [key] and ->prop elements are pushed on the
  * stack. A method call in the chain turns it into a value (the result is
@@ -1351,6 +1392,7 @@ static void lvalue_rest(VarRef r) {
 	}
 	if (app) fail("Cannot use [] for reading");
 	emit(OP_LOAD); emit(r.scope); emit(r.slot); emit(n);
+	if (is_op("(")) rvalue_postfix();         /* $f(...) */
 }
 
 static void var_expr(void) {
@@ -1361,6 +1403,12 @@ static void var_expr(void) {
 /* method calls, properties and [ ] behind a value that is not a variable */
 static void rvalue_postfix(void) {
 	for (;;) {
+		if (is_op("(")) {                      /* call of a closure or callable */
+			int argc;
+			call_args(&argc);
+			emit2(OP_CALLV, argc);
+			continue;
+		}
 		if (is_op("[")) {
 			advance();
 			expr();
@@ -1623,8 +1671,18 @@ static void primary(void) {
 		emit2(OP_INT, 1);
 		return;
 	}
-	if (!strcasecmp(name, "function") || !strcasecmp(name, "fn"))
-		fail("Anonymous functions are not supported");
+	if (!strcasecmp(name, "function") || !strcasecmp(name, "fn")) {
+		compile_closure(!strcasecmp(name, "fn"));
+		rvalue_postfix();
+		return;
+	}
+	if (!strcasecmp(name, "static") && peek()->t == TK_ID &&
+	    (!strcasecmp(peek()->s, "function") || !strcasecmp(peek()->s, "fn"))) {
+		advance();                         /* static closure: same as a closure here */
+		compile_closure(!strcasecmp(tok.s, "fn"));
+		rvalue_postfix();
+		return;
+	}
 	if (!strcasecmp(name, "new")) {
 		advance();
 		if (tok.t != TK_ID) fail("new needs a class name");
@@ -1697,7 +1755,7 @@ static void expr_pow(void) {
 	while (is_kw("instanceof")) {
 		advance();
 		if (tok.t != TK_ID) fail("instanceof needs a class name");
-		int cr = class_ref(tok.s);
+		int cr = !strcasecmp(tok.s, "Closure") ? CREF_CLOSURE : class_ref(tok.s);
 		advance();
 		emit2(OP_INSTOF, cr);
 	}
@@ -2067,7 +2125,8 @@ static void skip_return_type(void) {
 }
 
 /* parameters and body; promoteCls >= 0: constructor of that class, where
- * "public $x" parameters declare and set properties */
+ * "public $x" parameters declare and set properties. hasBody: 0 abstract,
+ * 1 { body }, 2 arrow function "=> expr", 3 closure with optional use (...) */
 static void params_and_body(Func *fn, int promoteCls, int hasBody) {
 	char promoted[PARAMS_MAX][NAME_MAX_LEN + 1];
 	int npromoted = 0;
@@ -2107,8 +2166,31 @@ static void params_and_body(Func *fn, int promoteCls, int hasBody) {
 		if (!accept(",")) break;
 	}
 	expect(")");
+	if (hasBody == 3 && is_kw("use")) {
+		advance();
+		expect("(");
+		while (!is_op(")")) {
+			if (is_op("&")) fail("References are not supported (use (&$x))");
+			if (tok.t != TK_VAR) syntax_error();
+			VarRef v = resolve_var(tok.s);
+			if (v.scope != 0 || v.slot < fn->nparams) fail("Cannot use $%s twice", tok.s);
+			for (int i = 0; i < scope->ncap; i++) if (scope->capSlot[i] == v.slot) fail("Cannot use $%s twice", tok.s);
+			add_capture(tok.s, v.slot);
+			advance();
+			if (!accept(",")) break;
+		}
+		expect(")");
+	}
 	skip_return_type();
 	if (!hasBody) { expect(";"); return; }
+	if (hasBody == 2) {
+		if (is_op("{")) fail("fn needs => expression (for a block use function () { })");
+		expect("=>");
+		scope->capturing = 1;
+		expr_assign();
+		emit(OP_RET);
+		return;
+	}
 	expect("{");
 	for (int i = 0; i < npromoted; i++) {           /* $this->x = $x; */
 		VarRef v = resolve_var(promoted[i]);
@@ -2134,7 +2216,7 @@ static void compile_function(void) {
 	advance();
 	int skip = emit_jump(OP_JMP);
 	Scope sc;
-	sc.n = sc.ng = 0;
+	memset(&sc, 0, sizeof sc);
 	sc.isMethod = 0;
 	Scope *saved = scope;
 	int savedLoops = nloops;
@@ -2147,6 +2229,38 @@ static void compile_function(void) {
 	scope = saved;
 	nloops = savedLoops;
 	patch(skip);
+}
+
+/* function (...) use (...) { ... } or fn (...) => expr as a value */
+static void compile_closure(int arrow) {
+	advance();                             /* function / fn */
+	accept("&");
+	int f = new_func("{closure}");
+	closuresMade++;
+	int skip = emit_jump(OP_JMP);
+	Scope sc;
+	memset(&sc, 0, sizeof sc);
+	sc.isMethod = scope ? scope->isMethod : 0;
+	sc.arrow = arrow;
+	Scope *saved = scope;
+	int savedLoops = nloops;
+	scope = &sc;
+	nloops = 0;
+	Func *fn = &funcs[f];
+	fn->addr = ncode;
+	params_and_body(fn, -1, arrow ? 2 : 3);
+	fn->nlocals = sc.n;
+	fn->ncaps = sc.ncap;
+	memcpy(fn->capSlot, sc.capSlot, sizeof sc.capSlot);
+	scope = saved;
+	nloops = savedLoops;
+	patch(skip);
+	/* the captured values come from the surrounding scope */
+	for (int i = 0; i < sc.ncap; i++) {
+		VarRef v = resolve_var(sc.caps[i]);
+		emit(OP_LOAD); emit(v.scope); emit(v.slot); emit(0);
+	}
+	emit(OP_CLOSURE); emit(f); emit(sc.ncap);
 }
 
 static void compile_method(int c, int vis, int isStatic, int isAbstract) {
@@ -2167,7 +2281,7 @@ static void compile_method(int c, int vis, int isStatic, int isAbstract) {
 	Func *fn = &funcs[f];
 	int skip = isAbstract ? -1 : emit_jump(OP_JMP);
 	Scope sc;
-	sc.n = sc.ng = 0;
+	memset(&sc, 0, sizeof sc);
 	sc.isMethod = !isStatic;
 	Scope *saved = scope;
 	int savedLoops = nloops;
@@ -2496,7 +2610,21 @@ static void push(Value v) {
 }
 static Value pop(void) { return stack[--sp]; }
 
+/* temporaries of builtins that run callbacks: freed by vm_reset when a
+ * callback fails, popped by the builtin when it finishes */
+#define SCRATCH_MAX 16
+static struct { void *p; Value v; } scratch[SCRATCH_MAX];
+static int nscratch;
+
+static void scratch_push(void *p, Value v) {
+	if (nscratch >= SCRATCH_MAX) { free(p); release(v); fail("Callbacks nested too deeply"); }
+	scratch[nscratch].p = p;
+	scratch[nscratch++].v = v;
+}
+static void scratch_pop(int n) { nscratch -= n; }
+
 static void vm_reset(void) {
+	while (nscratch > 0) { nscratch--; free(scratch[nscratch].p); release(scratch[nscratch].v); }
 	while (sp > 0) release(stack[--sp]);
 	while (nframes > 0) { nframes--; release(frames[nframes].thisv); frames[nframes].thisv = mk_null(); }
 }
@@ -2510,6 +2638,7 @@ static const char *type_name(Value v) {
 	case T_STR: return "string";
 	case T_ARR: return "array";
 	case T_OBJ: return classes[v.u.o->cls].name;
+	case T_CLO: return "Closure";
 	default: return "value";
 	}
 }
@@ -2751,6 +2880,109 @@ static void enter_func(int f, int argc, Value thisv, int cls, int scls, int ctor
 }
 
 static void exec_one(void);
+
+/* the value below argc arguments is called: closure, function name
+ * ("strlen", "myfunc", "Class::method"), [$obj, "method"], ["Class", "method"]
+ * or an object with __invoke. User code gets a frame, builtins run at once
+ * and leave their result. */
+static void invoke(int argc) {
+	Value *cv = &stack[sp - argc - 1];
+	Value callee = *cv;                        /* we own this reference now */
+	memmove(cv, cv + 1, argc * sizeof(Value));
+	sp--;
+	if (callee.t == T_CLO) {
+		Clo *c = callee.u.c;
+		Func *fn = &funcs[c->func];
+		retain(c->thisv);
+		enter_func(c->func, argc, c->thisv, c->cls, c->scls, 0);
+		Value *loc = &stack[frames[nframes - 1].base];
+		for (int i = 0; i < c->nuse; i++) {
+			release(loc[fn->capSlot[i]]);
+			loc[fn->capSlot[i]] = c->use[i];
+			retain(c->use[i]);
+		}
+		release(callee);
+		return;
+	}
+	if (callee.t == T_STR) {
+		char name[NAME_MAX_LEN * 2 + 4];
+		snprintf(name, sizeof name, "%s", callee.u.s->s);
+		char *dc = strstr(name, "::");
+		if (dc) {                              /* "Class::method" */
+			*dc = 0;
+			Value arr = mk_arr();
+			arr_push(arr.u.a, mk_cstr(name));
+			arr_push(arr.u.a, mk_cstr(dc + 2));
+			release(callee);
+			callee = arr;
+		} else {
+			int f = func_index(name, 0);
+			if (f >= 0 && funcs[f].addr >= 0) {
+				release(callee);
+				enter_func(f, argc, mk_null(), -1, -1, 0);
+				return;
+			}
+			int b = find_builtin(name);
+			release(callee);
+			if (b < 0) fail("Call to undefined function %s()", name);
+			int mn, mx;
+			builtin_arity(b, &mn, &mx);
+			if (builtin_takes_ref(b)) fail("%s() cannot be called this way", name);
+			if (argc < mn || (mx >= 0 && argc > mx)) fail("Wrong argument count for %s()", name);
+			Value r = builtin_fn(b)(&stack[sp - argc], argc);
+			pop_n(argc);
+			push(r);
+			return;
+		}
+	}
+	Value thisv = mk_null();
+	const char *mname = "__invoke";
+	int c = -1, viaClass = 0;
+	if (callee.t == T_OBJ) {
+		thisv = callee;
+		c = callee.u.o->cls;
+	} else if (callee.t == T_ARR && callee.u.a->n == 2 && callee.u.a->e[1].val.t == T_STR) {
+		Value t = callee.u.a->e[0].val;
+		mname = callee.u.a->e[1].val.u.s->s;
+		if (t.t == T_OBJ) { thisv = t; retain(t); c = t.u.o->cls; }
+		else if (t.t == T_STR) {
+			c = find_class(t.u.s->s);
+			if (c < 0 || !classes[c].defined) { release(callee); fail("Class %s not found", t.u.s->s); }
+			viaClass = 1;
+		}
+	}
+	if (c < 0) { fail("Value of type %s is not callable", type_name(callee)); }
+	CMethod *m = find_method(c, mname);
+	if (!m || m->func < 0 || !can_access(m->vis, m->decl)) {
+		char msg[80];
+		snprintf(msg, sizeof msg, "Cannot call %s::%s()", classes[c].name, mname);
+		release(thisv);
+		if (callee.t != T_OBJ) release(callee);
+		fail("%s", msg);
+	}
+	if (callee.t != T_OBJ) release(callee);
+	if (m->isStatic) { release(thisv); thisv = mk_null(); }
+	else if (viaClass) fail("Non-static method %s::%s() cannot be called statically", classes[c].name, m->name);
+	enter_func(m->func, argc, thisv, m->decl, c, 0);
+}
+
+/* call a callable with n arguments to completion right now (builtins such
+ * as usort and array_map); returns the result */
+static Value call_now(Value callee, Value *args, int n) {
+	int savedPc = pc, savedCur = curPc, depth = nframes;
+	retain(callee);
+	push(callee);
+	for (int i = 0; i < n; i++) { retain(args[i]); push(args[i]); }
+	invoke(n);
+	while (nframes > depth) {
+		if (state != BASIC_RUNNING) fail("input() is not allowed in a callback");
+		exec_one();
+	}
+	if (state != BASIC_RUNNING) fail("The program ended inside a callback");
+	pc = savedPc;
+	curPc = savedCur;
+	return pop();
+}
 
 /* run a method to completion right now (used for __toString) */
 static Value call_method_now(CMethod *m, Value thisv) {
@@ -3069,7 +3301,8 @@ static void exec_one(void) {
 	case OP_INSTOF: {
 		int cr = code[pc++];
 		a = pop();
-		r = mk_bool(a.t == T_OBJ && is_a(a.u.o->cls, cr >= 0 ? cr : resolve_cref(cr)));
+		if (cr == CREF_CLOSURE) r = mk_bool(a.t == T_CLO);
+		else r = mk_bool(a.t == T_OBJ && is_a(a.u.o->cls, cr >= 0 ? cr : resolve_cref(cr)));
 		release(a);
 		push(r);
 		return;
@@ -3095,6 +3328,29 @@ static void exec_one(void) {
 		release(a);
 		r.t = T_PNAME;
 		push(r);
+		return;
+	case OP_CLOSURE: {
+		int f = code[pc++], nc = code[pc++];
+		Clo *c = malloc(sizeof(Clo) + sizeof(Value) * (nc ? nc - 1 : 0));
+		if (!c) fail("Out of memory");
+		Frame *fr = &frames[nframes - 1];
+		c->rc = 1;
+		c->func = f;
+		c->id = ++objIds;
+		c->nuse = nc;
+		c->cls = fr->cls;
+		c->scls = fr->scls;
+		c->thisv = fr->thisv;
+		retain(c->thisv);
+		memcpy(c->use, &stack[sp - nc], nc * sizeof(Value));   /* takes the references */
+		sp -= nc;
+		r.t = T_CLO;
+		r.u.c = c;
+		push(r);
+		return;
+	}
+	case OP_CALLV:
+		invoke(code[pc++]);
 		return;
 	case OP_CALLB: {
 		int bi = code[pc++], argc = code[pc++];
@@ -3210,6 +3466,13 @@ static void dump(Buf *b, Value v, int indent, int varDump) {
 	char t[48];
 	int l;
 	const char *s;
+	if (v.t == T_CLO) {
+		if (!varDump) { buf_adds(b, "Closure Object\n"); for (int i = 0; i < indent; i++) buf_add(b, " ", 1); buf_adds(b, "(\n"); }
+		else { for (int i = 0; i < indent; i++) buf_add(b, " ", 1); snprintf(t, sizeof t, "object(Closure)#%d (0) {\n", v.u.c->id); buf_adds(b, t); }
+		for (int i = 0; i < indent; i++) buf_add(b, " ", 1);
+		buf_adds(b, varDump ? "}\n" : ")\n");
+		return;
+	}
 	if (v.t == T_OBJ) {
 		Obj *o = v.u.o;
 		Class *k = &classes[o->cls];
@@ -3473,6 +3736,17 @@ BI(str_contains) { UNUSED; int hl, nl; const char *h = S(0, &hl), *nd = S(1, &nl
 BI(str_starts_with) { UNUSED; int hl, nl; const char *h = S(0, &hl), *nd = S(1, &nl); return mk_bool(nl <= hl && !memcmp(h, nd, nl)); }
 BI(str_ends_with) { UNUSED; int hl, nl; const char *h = S(0, &hl), *nd = S(1, &nl); return mk_bool(nl <= hl && !memcmp(h + hl - nl, nd, nl)); }
 
+BI(strcmp) { UNUSED; int al, bl; const char *x = S(0, &al), *y = S(1, &bl); return mk_int(str_cmp(x, al, y, bl)); }
+BI(strcasecmp) {
+	UNUSED;
+	int al, bl;
+	const char *x = S(0, &al), *y = S(1, &bl);
+	for (int i = 0; i < al && i < bl; i++) {
+		int d = tolower((unsigned char)x[i]) - tolower((unsigned char)y[i]);
+		if (d) return mk_int(d < 0 ? -1 : 1);
+	}
+	return mk_int(al < bl ? -1 : al > bl);
+}
 BI(str_repeat) {
 	UNUSED;
 	int l;
@@ -3591,7 +3865,7 @@ BI(is_null) { UNUSED; return mk_bool(a[0].t == T_NULL); }
 BI(gettype) {
 	UNUSED;
 	static const char *const names[] = { "NULL", "boolean", "integer", "double", "string", "array" };
-	if (a[0].t == T_OBJ) return mk_cstr("object");
+	if (a[0].t == T_OBJ || a[0].t == T_CLO) return mk_cstr("object");
 	return mk_cstr(names[a[0].t <= T_ARR ? a[0].t : 0]);
 }
 
@@ -3606,9 +3880,10 @@ static int class_of_arg(Value v) {
 	return -1;
 }
 
-BI(is_object) { UNUSED; return mk_bool(a[0].t == T_OBJ); }
+BI(is_object) { UNUSED; return mk_bool(a[0].t == T_OBJ || a[0].t == T_CLO); }
 BI(get_class) {
 	UNUSED;
+	if (a[0].t == T_CLO) return mk_cstr("Closure");
 	if (a[0].t != T_OBJ) fail("get_class() expects an object");
 	return mk_cstr(classes[a[0].u.o->cls].name);
 }
@@ -3922,6 +4197,218 @@ BI(shuffle) {
 	arr->next = arr->n;
 	return mk_bool(1);
 }
+
+/* --- callbacks --- */
+
+static int is_callable_val(Value v) {
+	if (v.t == T_CLO) return 1;
+	if (v.t == T_STR) {
+		const char *dc = strstr(v.u.s->s, "::");
+		if (!dc) {
+			int f = func_index(v.u.s->s, 0);
+			return (f >= 0 && funcs[f].addr >= 0) || find_builtin(v.u.s->s) >= 0;
+		}
+		char cn[NAME_MAX_LEN + 1];
+		int l = (int)(dc - v.u.s->s);
+		if (l > NAME_MAX_LEN) return 0;
+		memcpy(cn, v.u.s->s, l);
+		cn[l] = 0;
+		int c = find_class(cn);
+		return c >= 0 && classes[c].defined && find_method(c, dc + 2) != NULL;
+	}
+	if (v.t == T_OBJ) return find_method(v.u.o->cls, "__invoke") != NULL;
+	if (v.t == T_ARR && v.u.a->n == 2 && v.u.a->e[1].val.t == T_STR) {
+		Value t = v.u.a->e[0].val;
+		int c = t.t == T_OBJ ? t.u.o->cls : t.t == T_STR ? find_class(t.u.s->s) : -1;
+		return c >= 0 && classes[c].defined && find_method(c, v.u.a->e[1].val.u.s->s) != NULL;
+	}
+	return 0;
+}
+
+static void need_callable(Value v, const char *fn) {
+	if (!is_callable_val(v)) fail("%s(): argument is not callable", fn);
+}
+
+BI(is_callable) { UNUSED; return mk_bool(is_callable_val(a[0])); }
+BI(function_exists) {
+	UNUSED;
+	const char *name = S(0, NULL);
+	int f = func_index(name, 0);
+	return mk_bool((f >= 0 && funcs[f].addr >= 0) || find_builtin(name) >= 0);
+}
+BI(call_user_func) { need_callable(a[0], "call_user_func"); return call_now(a[0], a + 1, n - 1); }
+BI(call_user_func_array) {
+	UNUSED;
+	need_callable(a[0], "call_user_func_array");
+	Arr *args = arr_arg(a, 1, "call_user_func_array");
+	if (args->n > PARAMS_MAX + 8) fail("call_user_func_array(): too many arguments");
+	Value v[PARAMS_MAX + 8];
+	for (int i = 0; i < args->n; i++) v[i] = args->e[i].val;
+	return call_now(a[0], v, args->n);
+}
+
+BI(array_map) {
+	Value cb = a[0];
+	if (cb.t != T_NULL) need_callable(cb, "array_map");
+	for (int i = 1; i < n; i++) arr_arg(a, i, "array_map");
+	Value r = mk_arr();
+	scratch_push(NULL, r);
+	if (n == 2) {
+		/* one array: keys are kept */
+		Arr *src = a[1].u.a;
+		for (int i = 0; i < src->n; i++) {
+			Value v = src->e[i].val;
+			if (cb.t == T_NULL) retain(v);
+			else v = call_now(cb, &src->e[i].val, 1);
+			arr_set(r.u.a, src->e[i].key, v);
+		}
+		scratch_pop(1);
+		return r;
+	}
+	/* several arrays: walk them side by side, missing values are null */
+	if (n - 1 > PARAMS_MAX) fail("array_map(): too many arrays");
+	int len = 0;
+	for (int i = 1; i < n; i++) if (a[i].u.a->n > len) len = a[i].u.a->n;
+	for (int k = 0; k < len; k++) {
+		Value args[PARAMS_MAX];
+		for (int i = 1; i < n; i++) args[i - 1] = k < a[i].u.a->n ? a[i].u.a->e[k].val : mk_null();
+		if (cb.t != T_NULL) arr_push(r.u.a, call_now(cb, args, n - 1));
+		else {
+			Value t = mk_arr();
+			for (int i = 0; i < n - 1; i++) { retain(args[i]); arr_push(t.u.a, args[i]); }
+			arr_push(r.u.a, t);
+		}
+	}
+	scratch_pop(1);
+	return r;
+}
+
+BI(array_filter) {
+	Arr *src = arr_arg(a, 0, "array_filter");
+	int mode = n > 2 ? to_int(a[2]) : 0;
+	Value cb = n > 1 ? a[1] : mk_null();
+	if (cb.t != T_NULL) need_callable(cb, "array_filter");
+	Value r = mk_arr();
+	scratch_push(NULL, r);
+	for (int i = 0; i < src->n; i++) {
+		Entry *e = &src->e[i];
+		int keep;
+		if (cb.t == T_NULL) keep = to_bool(e->val);
+		else {
+			Value args[2] = { mode == 2 ? e->key : e->val, e->key };
+			Value t = call_now(cb, args, mode == 1 ? 2 : 1);
+			keep = to_bool(t);
+			release(t);
+		}
+		if (keep) { retain(e->val); arr_set(r.u.a, e->key, e->val); }
+	}
+	scratch_pop(1);
+	return r;
+}
+
+BI(array_reduce) {
+	Arr *src = arr_arg(a, 0, "array_reduce");
+	need_callable(a[1], "array_reduce");
+	Value acc = n > 2 ? a[2] : mk_null();
+	retain(acc);
+	for (int i = 0; i < src->n; i++) {
+		Value args[2] = { acc, src->e[i].val };
+		scratch_push(NULL, acc);
+		Value t = call_now(a[1], args, 2);
+		scratch_pop(1);
+		release(acc);
+		acc = t;
+	}
+	return acc;
+}
+
+/* array_walk($arr, fn($value, $key) => ...): the callback cannot change
+ * the array (no references), only look at it */
+BI(array_walk) {
+	need_callable(a[0], "array_walk");
+	if (refArg->t != T_ARR) fail("array_walk() expects an array");
+	Value arr = *refArg;
+	retain(arr);
+	scratch_push(NULL, arr);
+	for (int i = 0; i < arr.u.a->n; i++) {
+		Value args[3] = { arr.u.a->e[i].val, arr.u.a->e[i].key, n > 1 ? a[1] : mk_null() };
+		release(call_now(a[0], args, n > 1 ? 3 : 2));
+	}
+	scratch_pop(1);
+	release(arr);
+	return mk_bool(1);
+}
+
+/* user sorting: stable merge sort over indexes, so a failing callback
+ * leaves the array untouched */
+typedef struct { Value cb; Entry *e; int keys; } SortCtx;
+
+static int user_cmp(SortCtx *c, int i, int j) {
+	Value args[2] = { c->keys ? c->e[i].key : c->e[i].val, c->keys ? c->e[j].key : c->e[j].val };
+	Value r = call_now(c->cb, args, 2);
+	int res;
+	if (r.t == T_BOOL) {
+		/* comparators like fn($a, $b) => $a > $b: ask again the other way round */
+		if (r.u.i) res = 1;
+		else {
+			Value sw[2] = { args[1], args[0] };
+			Value r2 = call_now(c->cb, sw, 2);
+			res = to_bool(r2) ? -1 : 0;
+			release(r2);
+		}
+	} else res = sign(to_float(r));
+	release(r);
+	return res;
+}
+
+static void merge_sort(SortCtx *c, int *idx, int *tmp, int n) {
+	if (n < 2) return;
+	int h = n / 2, i = 0, j = h, k = 0;
+	merge_sort(c, idx, tmp, h);
+	merge_sort(c, idx + h, tmp, n - h);
+	while (i < h && j < n) tmp[k++] = user_cmp(c, idx[j], idx[i]) < 0 ? idx[j++] : idx[i++];
+	while (i < h) tmp[k++] = idx[i++];
+	while (j < n) tmp[k++] = idx[j++];
+	memcpy(idx, tmp, n * sizeof(int));
+}
+
+static Value usort_impl(Value cb, int keepKeys, int byKey, const char *fn) {
+	need_callable(cb, fn);
+	Arr *arr = ref_array(fn);
+	Value hold;                                /* keeps the array alive during callbacks */
+	hold.t = T_ARR;
+	hold.u.a = arr;
+	retain(hold);
+	scratch_push(NULL, hold);
+	int nn = arr->n;
+	if (nn > 1) {
+		int *idx = malloc(nn * 2 * sizeof(int));
+		if (!idx) fail("Out of memory");
+		scratch_push(idx, mk_null());
+		for (int i = 0; i < nn; i++) idx[i] = i;
+		SortCtx c = { cb, arr->e, byKey };
+		merge_sort(&c, idx, idx + nn, nn);
+		scratch_pop(1);
+		Entry *sorted = malloc(nn * sizeof(Entry));
+		if (!sorted) { free(idx); fail("Out of memory"); }
+		if (arr->n == nn) {                    /* unless the callback changed it */
+			for (int i = 0; i < nn; i++) sorted[i] = arr->e[idx[i]];
+			memcpy(arr->e, sorted, nn * sizeof(Entry));
+		}
+		free(sorted);
+		free(idx);
+	}
+	if (!keepKeys) {
+		for (int i = 0; i < arr->n; i++) { release(arr->e[i].key); arr->e[i].key = mk_int(i); }
+		arr->next = arr->n;
+	}
+	scratch_pop(1);
+	release(hold);
+	return mk_bool(1);
+}
+BI(usort) { UNUSED; return usort_impl(a[0], 0, 0, "usort"); }
+BI(uasort) { UNUSED; return usort_impl(a[0], 1, 0, "uasort"); }
+BI(uksort) { UNUSED; return usort_impl(a[0], 1, 1, "uksort"); }
 
 /* --- DS: text and input --- */
 
@@ -4375,6 +4862,7 @@ static int json_enc(Buf *b, Value v, int flags, int depth) {
 		buf_adds(b, t);
 		return 1;
 	case T_STR: return json_str(b, v.u.s->s, v.u.s->len, flags);
+	case T_CLO: buf_adds(b, "{}"); return 1;
 	case T_ARR: {
 		Arr *a = v.u.a;
 		int list = 1;
@@ -4575,7 +5063,7 @@ static const Builtin builtins[] = {
 	{ "trim", bi_trim, 1, 2, 0 }, { "ltrim", bi_ltrim, 1, 2, 0 }, { "rtrim", bi_rtrim, 1, 2, 0 },
 	{ "substr", bi_substr, 2, 3, 0 }, { "strpos", bi_strpos, 2, 3, 0 },
 	{ "str_contains", bi_str_contains, 2, 2, 0 }, { "str_starts_with", bi_str_starts_with, 2, 2, 0 },
-	{ "str_ends_with", bi_str_ends_with, 2, 2, 0 }, { "str_repeat", bi_str_repeat, 2, 2, 0 },
+	{ "str_ends_with", bi_str_ends_with, 2, 2, 0 }, { "str_repeat", bi_str_repeat, 2, 2, 0 }, { "strcmp", bi_strcmp, 2, 2, 0 }, { "strcasecmp", bi_strcasecmp, 2, 2, 0 },
 	{ "str_pad", bi_str_pad, 2, 4, 0 }, { "str_replace", bi_str_replace, 3, 3, 0 },
 	{ "explode", bi_explode, 2, 3, 0 }, { "implode", bi_implode, 1, 2, 0 },
 	{ "join", bi_implode, 1, 2, 0 },
@@ -4612,6 +5100,12 @@ static const Builtin builtins[] = {
 	{ "array_push", bi_array_push, 2, -1, 1 }, { "array_pop", bi_array_pop, 1, 1, 1 },
 	{ "array_shift", bi_array_shift, 1, 1, 1 }, { "array_unshift", bi_array_unshift, 2, -1, 1 },
 	{ "sort", bi_sort, 1, 1, 1 }, { "rsort", bi_rsort, 1, 1, 1 }, { "shuffle", bi_shuffle, 1, 1, 1 },
+	{ "usort", bi_usort, 2, 2, 1 }, { "uasort", bi_uasort, 2, 2, 1 }, { "uksort", bi_uksort, 2, 2, 1 },
+	{ "array_walk", bi_array_walk, 2, 3, 1 },
+	{ "array_map", bi_array_map, 2, -1, 0 }, { "array_filter", bi_array_filter, 1, 3, 0 },
+	{ "array_reduce", bi_array_reduce, 2, 3, 0 },
+	{ "call_user_func", bi_call_user_func, 1, -1, 0 }, { "call_user_func_array", bi_call_user_func_array, 2, 2, 0 },
+	{ "is_callable", bi_is_callable, 1, 1, 0 }, { "function_exists", bi_function_exists, 1, 1, 0 },
 	{ "cls", bi_cls, 0, 0, 0 }, { "locate", bi_locate, 2, 2, 0 }, { "color", bi_color, 1, 1, 0 },
 	{ "input", bi_input, 0, 1, 0 }, { "inkey", bi_inkey, 0, 0, 0 }, { "joy", bi_joy, 0, 0, 0 },
 	{ "swap_screens", bi_swap_screens, 0, 1, 0 }, { "touch", bi_touch, 0, 0, 0 },
@@ -4659,6 +5153,7 @@ static int find_constant(const char *name, Value *out) {
 		if (!strcmp(userConsts[i].name, name)) { *out = userConsts[i].v; retain(*out); return 1; }
 	static const struct { const char *n; int v; } ints[] = {
 		{ "PHP_INT_MAX", 2147483647 }, { "PHP_INT_MIN", -2147483647 - 1 }, { "PHP_INT_SIZE", 4 },
+		{ "ARRAY_FILTER_USE_BOTH", 1 }, { "ARRAY_FILTER_USE_KEY", 2 },
 		{ "STR_PAD_LEFT", 0 }, { "STR_PAD_RIGHT", 1 }, { "STR_PAD_BOTH", 2 },
 		{ "JOY_UP", 1 }, { "JOY_DOWN", 2 }, { "JOY_LEFT", 4 }, { "JOY_RIGHT", 8 }, { "JOY_A", 16 },
 		{ "JOY_B", 32 }, { "JOY_X", 64 }, { "JOY_Y", 128 }, { "JOY_L", 256 }, { "JOY_R", 512 },
@@ -4689,16 +5184,17 @@ static void reset_code(void) {
 	nclasses = 0;
 	clear_user_consts();
 	progCode = progConst = progFuncs = progClasses = 0;
+	keepCode = keepConst = keepFuncs = 0;
 }
 
 /* back to the state right after the RUN-compiled program */
 static void reset_direct_code(void) {
-	for (int i = progConst; i < nconst; i++) release(consts[i]);
-	nconst = progConst;
-	ncode = progCode;
-	for (int i = progFuncs; i < nfuncs; i++)
+	for (int i = keepConst; i < nconst; i++) release(consts[i]);
+	nconst = keepConst;
+	ncode = keepCode;
+	for (int i = keepFuncs; i < nfuncs; i++)
 		for (int k = 0; k < funcs[i].nparams; k++) release(funcs[i].defs[k]);
-	nfuncs = progFuncs;
+	nfuncs = keepFuncs;
 	for (int i = progClasses; i < nclasses; i++) free_class(&classes[i]);
 	nclasses = progClasses;
 }
@@ -5256,20 +5752,26 @@ static void cmd_run(void) {
 	progConst = nconst;
 	progFuncs = nfuncs;
 	progClasses = nclasses;
+	keepCode = ncode;
+	keepConst = nconst;
+	keepFuncs = nfuncs;
 	start_vm(0);
 }
 
 static void cmd_direct(const char *src) {
 	reset_direct_code();
 	free_src_bufs();
+	int start = ncode;
 	compiling = 1;
 	errLine = -3;
 	directCompile = 1;
+	closuresMade = 0;
 	compile_source(src, -1);
 	directCompile = 0;
 	compiling = 0;
 	free_src_bufs();
-	start_vm(progCode);
+	if (closuresMade) { keepCode = ncode; keepConst = nconst; keepFuncs = nfuncs; }
+	start_vm(start);
 }
 
 /* first word of the line is an editor command? returns its argument */

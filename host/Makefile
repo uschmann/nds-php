@@ -56,5 +56,20 @@ test-io: basic
 	diff -u test_io.expected test.out && echo "io test passed"
 	rm -rf files.tmp test.out
 
+# closures, arrow functions and callbacks (array_map, usort, ...); REPL closures stay callable
+test-closure: basic
+	(cat test_closure.txt; echo RUN; echo 'print_r($$double);'; echo 'var_dump(fn() => 1);'; echo 'echo json_encode([$$inc]);'; \
+	 echo 'echo $$double;'; echo '$$x = 5;'; echo '$$nf = "nofunc"; $$nf();'; echo 'echo count($$people), PHP_EOL;'; \
+	 echo 'echo array_map(fn($$x) => $$x + $$q, [1])[0], PHP_EOL;'; echo '$$q = 7; echo (fn($$x) => $$x + $$q)(1), PHP_EOL;'; \
+	 echo 'echo array_map(fn($$x) => fn($$y) => $$x * $$y, [2, 3])[1](4), PHP_EOL;'; \
+	 echo '$$f = function() use ($$x, $$x) {};'; echo '$$g = function($$a) use ($$a) {};'; \
+	 echo '$$t = 0; $$w = function() use (&$$t) {};'; \
+	 echo 'array_walk($$m, function($$v, $$k) { echo "$$k=$$v "; }); echo PHP_EOL;'; \
+	 echo '$$h = fn($$x) => $$x * 3;'; echo 'echo 1 + 2, PHP_EOL;'; echo 'echo $$h(2), " ", strcmp("a", "b"), PHP_EOL;'; \
+	 echo 'usort($$people, fn($$a, $$b) => $$a["n"] <=> $$b["x"] + 1 / 0);'; echo 'echo $$people[0]["n"], PHP_EOL;') \
+	 | ./basic > test.out
+	diff -u test_closure.expected test.out && echo "closure test passed"
+	rm -f test.out
+
 clean:
 	rm -f basic test.out

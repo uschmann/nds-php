@@ -92,19 +92,21 @@ Supported:
 * **Statements:** `echo`, `print`, `if/elseif/else`, `while`, `do…while`, `for`, `foreach ($a as $k => $v)`,
   `switch/case/default`, `break n`, `continue n`, `function name($a, $b = 1) { … return …; }`,
   `global`, `unset`, `isset`, `empty`, `exit`/`die`, comments `//`, `#`, `/* */`
-* **Functions:** `strlen substr strpos str_repeat str_pad str_replace str_contains str_starts_with
+* **Functions:** `strlen substr strpos str_repeat str_pad str_replace strcmp strcasecmp str_contains str_starts_with
   str_ends_with strtoupper strtolower ucfirst lcfirst trim ltrim rtrim strrev explode implode sprintf
   printf number_format chr ord intval floatval strval boolval is_numeric is_int is_float is_string
   is_bool is_array is_null gettype abs floor ceil round sqrt pow sin cos tan asin acos atan atan2
   exp log log10 pi fmod intdiv deg2rad rad2deg min max rand mt_rand srand count in_array
   array_search array_key_exists array_keys array_values array_sum array_reverse array_slice
   array_merge array_fill range array_push array_pop array_shift array_unshift sort rsort shuffle
-  print_r var_dump`
+  print_r var_dump`, with callbacks: `array_map array_filter array_reduce array_walk usort uasort uksort
+  call_user_func call_user_func_array is_callable function_exists`
 * **Constants:** `PHP_EOL`, `PHP_INT_MAX`, `M_PI`, `STR_PAD_LEFT/RIGHT/BOTH`, `JOY_UP` … `JOY_R`,
   your own with `const NAME = value;`
+* **Closures and arrow functions** (`function () use ($x) { … }`, `fn ($x) => …`) – see below
 * **Classes, interfaces and traits** – see below
 
-Not included are, among others, closures, references (`&`), static variables in functions, `match`,
+Not included are, among others, references (`&`), static variables in functions, `match`,
 namespaces and exceptions (`try`/`catch`). As in PHP, keywords and function names are case-insensitive, variables are not.
 Numbers with a decimal point are single-precision `float` on the DS.
 
@@ -159,6 +161,33 @@ var_dump($c instanceof Shape);              // bool(true)
 
 Classes are declared in the program (not in the REPL), but may live in any file and come before or
 after their use. There are no magic methods other than `__construct` and `__toString`.
+
+### Closures and callbacks
+
+Functions are values too: `function` without a name creates a closure, `fn` an arrow function. A
+closure only sees outside variables that it takes over with `use`, with their value at creation
+time. An arrow function automatically takes every variable its expression uses. Inside methods
+`$this` is available in both.
+
+```php
+$factor = 3;
+$times = function ($x) use ($factor) { return $x * $factor; };
+$plus = fn ($x) => $x + $factor;
+echo $times(5), " ", $plus(5);                             // 15 8
+
+$numbers = [5, 3, 8, 1];
+print_r(array_map(fn ($x) => $x * $x, $numbers));          // [25, 9, 64, 1]
+print_r(array_filter($numbers, fn ($x) => $x > 2));        // keys are kept
+echo array_reduce($numbers, fn ($s, $x) => $s + $x, 0);    // 17
+usort($players, fn ($a, $b) => $b['score'] <=> $a['score']);
+```
+
+Anything callable in PHP works as a callback: closures, function names (`'strtoupper'`,
+`'my_function'`), `[$object, 'method']`, `['Class', 'method']` or `'Class::method'` and objects
+with `__invoke()`. `$f(…)` calls such a value directly. `usort`, `uasort` and `uksort` sort stably;
+the comparison may return a number or (like `$a > $b`) a boolean. As there are no references,
+`use (&$x)` cannot write back and `array_walk()` can only read the array. Closures created in the
+REPL stay callable as long as their variable exists.
 
 ### Text and input
 

@@ -94,19 +94,21 @@ Unterstützt werden:
 * **Anweisungen:** `echo`, `print`, `if/elseif/else`, `while`, `do…while`, `for`, `foreach ($a as $k => $v)`,
   `switch/case/default`, `break n`, `continue n`, `function name($a, $b = 1) { … return …; }`,
   `global`, `unset`, `isset`, `empty`, `exit`/`die`, Kommentare `//`, `#`, `/* */`
-* **Funktionen:** `strlen substr strpos str_repeat str_pad str_replace str_contains str_starts_with
+* **Funktionen:** `strlen substr strpos str_repeat str_pad str_replace strcmp strcasecmp str_contains str_starts_with
   str_ends_with strtoupper strtolower ucfirst lcfirst trim ltrim rtrim strrev explode implode sprintf
   printf number_format chr ord intval floatval strval boolval is_numeric is_int is_float is_string
   is_bool is_array is_null gettype abs floor ceil round sqrt pow sin cos tan asin acos atan atan2
   exp log log10 pi fmod intdiv deg2rad rad2deg min max rand mt_rand srand count in_array
   array_search array_key_exists array_keys array_values array_sum array_reverse array_slice
   array_merge array_fill range array_push array_pop array_shift array_unshift sort rsort shuffle
-  print_r var_dump`
+  print_r var_dump`, mit Callbacks: `array_map array_filter array_reduce array_walk usort uasort uksort
+  call_user_func call_user_func_array is_callable function_exists`
 * **Konstanten:** `PHP_EOL`, `PHP_INT_MAX`, `M_PI`, `STR_PAD_LEFT/RIGHT/BOTH`, `JOY_UP` … `JOY_R`,
   eigene mit `const NAME = wert;`
+* **Closures und Arrow Functions** (`function () use ($x) { … }`, `fn ($x) => …`) – siehe unten
 * **Klassen, Interfaces und Traits** – siehe unten
 
-Nicht dabei sind u. a. Closures, Referenzen (`&`), statische Variablen in Funktionen, `match`,
+Nicht dabei sind u. a. Referenzen (`&`), statische Variablen in Funktionen, `match`,
 Namespaces und Ausnahmen (`try`/`catch`). Schlüsselwörter und Funktionsnamen sind wie in PHP unabhängig von Groß-/Kleinschreibung,
 Variablen nicht. Zahlen mit Komma sind auf dem DS `float` mit einfacher Genauigkeit.
 
@@ -163,6 +165,34 @@ var_dump($c instanceof Shape);              // bool(true)
 Klassen werden im Programm deklariert (nicht in der REPL), dürfen aber in jeder Datei stehen und
 vor oder nach ihrer Verwendung kommen. Andere magische Methoden als `__construct` und
 `__toString` gibt es nicht.
+
+### Closures und Callbacks
+
+Funktionen sind auch Werte: `function` ohne Namen erzeugt eine Closure, `fn` eine Arrow Function.
+Eine Closure sieht Variablen von außen nur, wenn sie mit `use` übernommen werden, und zwar mit dem
+Wert beim Erzeugen. Eine Arrow Function übernimmt automatisch alle Variablen, die ihr Ausdruck
+benutzt. In Methoden ist `$this` in beiden verfügbar.
+
+```php
+$faktor = 3;
+$mal = function ($x) use ($faktor) { return $x * $faktor; };
+$plus = fn ($x) => $x + $faktor;
+echo $mal(5), " ", $plus(5);                               // 15 8
+
+$zahlen = [5, 3, 8, 1];
+print_r(array_map(fn ($x) => $x * $x, $zahlen));           // [25, 9, 64, 1]
+print_r(array_filter($zahlen, fn ($x) => $x > 2));         // Schlüssel bleiben erhalten
+echo array_reduce($zahlen, fn ($s, $x) => $s + $x, 0);     // 17
+usort($spieler, fn ($a, $b) => $b['punkte'] <=> $a['punkte']);
+```
+
+Als Callback geht alles, was in PHP aufrufbar ist: Closures, Funktionsnamen (`'strtoupper'`,
+`'meine_funktion'`), `[$objekt, 'methode']`, `['Klasse', 'methode']` bzw. `'Klasse::methode'` und
+Objekte mit `__invoke()`. `$f(…)` ruft einen solchen Wert direkt auf. `usort`, `uasort` und
+`uksort` sortieren stabil; die Vergleichsfunktion darf eine Zahl oder (wie `$a > $b`) einen
+Wahrheitswert liefern. Da es keine Referenzen gibt, kann `use (&$x)` nichts zurückschreiben, und
+`array_walk()` kann das Array nur lesen. Closures, die in der REPL entstehen, bleiben aufrufbar,
+solange die Variable existiert.
 
 ### Text und Eingabe
 

@@ -1,0 +1,115 @@
+42
+15
+111 103
+Array
+(
+    [0] => 1
+    [1] => 4
+    [2] => 9
+    [3] => 16
+)
+Array
+(
+    [a] => X
+    [b] => Y
+)
+Array
+(
+    [0] => Array
+        (
+            [0] => 1
+            [1] => a
+        )
+
+    [1] => Array
+        (
+            [0] => 2
+            [1] => b
+        )
+
+    [2] => Array
+        (
+            [0] => 
+            [1] => c
+        )
+
+)
+Array
+(
+    [0] => 1-a
+    [1] => 2-b
+)
+Array
+(
+    [0] => 1
+    [2] => 2
+    [4] => 3
+    [6] => a
+)
+Array
+(
+    [1] => 12
+    [2] => 7
+    [3] => 20
+)
+Array
+(
+    [bb] => 2
+    [ccc] => 3
+)
+Array
+(
+    [3] => 4
+)
+10
+Di,Al,Bob,Cy
+Al,Bob,Cy,Di
+Array
+(
+    [c] => 1
+    [b] => 2
+    [a] => 3
+)
+Array
+(
+    [a] => 3
+    [b] => 2
+    [c] => 1
+)
+11 15
+10
+iife
+21 9,5,1
+2,4 6
+invoked 7 invoked 8
+ababab xy
+bool(true)
+bool(true)
+bool(false)
+bool(true)
+bool(false)
+bool(true)
+string(6) "object"
+string(7) "Closure"
+bool(true)
+ABCcba
+Closure Object
+(
+)
+object(Closure)#26 (0) {
+}
+[{}]
+Error: Object of class Closure could not be converted to string
+Error: Call to undefined function nofunc()
+4
+1
+8
+12
+Parse error: Cannot use $x twice
+Parse error: Cannot use $a twice
+Parse error: References are not supported (use (&$x))
+a=3 b=2 c=1 
+3
+6 -1
+Error: Division by zero
+Al
