@@ -15,6 +15,21 @@ static bool playing;
 static int pos = -1, framesLeft, channel = -1;
 static int previewFrames;
 
+/* effect voice for tone()/sfx(): a queue of segments, each a linear sweep
+ * of frequency and volume over a number of frames; independent of the
+ * sequencer so effects can play over music */
+typedef struct { unsigned char wave, vol0, vol1; unsigned short hz0, hz1, frames; } FxSeg;
+#define FX_QUEUE 32
+static FxSeg fxq[FX_QUEUE];
+static int fxHead, fxCount, fxFrame, fxChannel = -1, fxWave = -1;
+
+static void fx_frame(void);
+
+static void fx_off(void) {
+	if (fxChannel >= 0) soundKill(fxChannel);
+	fxChannel = fxWave = -1;
+}
+
 static void note_off(void) {
 	if (channel >= 0) soundKill(channel);
 	channel = -1;
@@ -56,6 +71,7 @@ void snd_play(const BasicSound *s) {
 
 void snd_stop(void) {
 	note_off();
+	snd_fx_stop();
 	playing = false;
 	previewFrames = 0;
 	pos = -1;
@@ -68,6 +84,7 @@ void snd_preview(int note, int inst, int frames) {
 }
 
 void snd_frame(void) {
+	fx_frame();
 	if (previewFrames > 0 && --previewFrames == 0) note_off();
 	if (!playing) return;
 	framesLeft--;
@@ -75,6 +92,55 @@ void snd_frame(void) {
 	if (framesLeft > 0) return;
 	if (++pos >= seq.count) { snd_stop(); return; }
 	start_note();
+}
+
+void snd_fx_stop(void) {
+	fx_off();
+	fxHead = fxCount = fxFrame = 0;
+}
+
+int snd_tone(int wave, int hz0, int hz1, int frames, int vol0, int vol1, int replace) {
+	if (replace) snd_fx_stop();
+	if (fxCount >= FX_QUEUE) return fxCount;
+	FxSeg *g = &fxq[(fxHead + fxCount++) % FX_QUEUE];
+	g->wave = (unsigned char)wave;
+	g->hz0 = (unsigned short)hz0;
+	g->hz1 = (unsigned short)hz1;
+	g->frames = (unsigned short)(frames < 1 ? 1 : frames);
+	g->vol0 = (unsigned char)vol0;
+	g->vol1 = (unsigned char)vol1;
+	return fxCount;
+}
+
+int snd_tone_queued(void) { return fxCount; }
+
+static void fx_frame(void) {
+	if (!fxCount) { if (fxChannel >= 0) fx_off(); return; }
+	FxSeg *g = &fxq[fxHead];
+	int t = fxFrame, n = g->frames;
+	int hz = g->hz0 + (g->hz1 - g->hz0) * t / n;
+	int vol = g->vol0 + (g->vol1 - g->vol0) * t / n;
+	if (hz < 20) hz = 20;
+	if (hz > 8000) hz = 8000;
+	u16 freq = (u16)(hz * 8);      /* 8 timer steps per period, see note_on */
+	if (vol <= 0) fx_off();
+	else if (fxChannel < 0 || fxWave != g->wave) {
+		fx_off();
+		if (g->wave == SND_NOISE) fxChannel = soundPlayNoise(freq, (u8)vol, 64);
+		else {
+			static const DutyCycle duty[3] = { DutyCycle_12, DutyCycle_25, DutyCycle_50 };
+			fxChannel = soundPlayPSG(duty[g->wave < 3 ? g->wave : 2], freq, (u8)vol, 64);
+		}
+		fxWave = fxChannel >= 0 ? g->wave : -1;
+	} else {
+		soundSetFreq(fxChannel, freq);
+		soundSetVolume(fxChannel, (u8)vol);
+	}
+	if (++fxFrame >= n) {
+		fxFrame = 0;
+		fxHead = (fxHead + 1) % FX_QUEUE;
+		fxCount--;
+	}
 }
 
 bool snd_busy(void) { return playing; }

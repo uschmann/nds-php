@@ -1,0 +1,130 @@
+{"name":"Ada","score":1250,"ok":true,"pi":3.5,"two":2.0,"tags":["a","b\/c"],"none":null,"empty":[]}
+[1,2,[3,"x\"y\n"]]
+{
+    "a": 1,
+    "b": [
+        1,
+        2
+    ]
+}
+"a/b"
+bool(true)
+array(2) {
+  ["a"]=>
+  array(6) {
+    [0]=>
+    int(1)
+    [1]=>
+    float(2.5)
+    [2]=>
+    float(-300)
+    [3]=>
+    string(3) "é	"
+    [4]=>
+    bool(false)
+    [5]=>
+    NULL
+  }
+  ["b"]=>
+  array(0) {
+  }
+}
+NULL
+NULL
+NULL
+int(42)
+{"x":1,"list":[1]}
+bool(false)
+11
+bool(true)
+99
+Array
+(
+    [0] => one
+    [1] => two
+    [2] => 
+    [3] => three
+)
+Array
+(
+    [0] => one
+    [1] => two
+    [2] => three
+)
+4
+bool(true)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+SAVED GAME (1 FILE)
+{"name":"Ada","score":1250,"ok":true,"pi":3.5,"two":2.0,"tags":["a","b\/c"],"none":null,"empty":[]}
+[1,2,[3,"x\"y\n"]]
+{
+    "a": 1,
+    "b": [
+        1,
+        2
+    ]
+}
+"a/b"
+bool(true)
+array(2) {
+  ["a"]=>
+  array(6) {
+    [0]=>
+    int(1)
+    [1]=>
+    float(2.5)
+    [2]=>
+    float(-300)
+    [3]=>
+    string(3) "é	"
+    [4]=>
+    bool(false)
+    [5]=>
+    NULL
+  }
+  ["b"]=>
+  array(0) {
+  }
+}
+NULL
+NULL
+NULL
+int(42)
+{"x":1,"list":[1]}
+bool(false)
+11
+bool(true)
+99
+Array
+(
+    [0] => one
+    [1] => two
+    [2] => 
+    [3] => three
+)
+Array
+(
+    [0] => one
+    [1] => two
+    [2] => three
+)
+4
+bool(true)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+Error: file_put_contents(): .php files belong to the editor
+Error: file_get_contents(): bad file name "../x"
+Error: sfx(): unknown effect "boom" (e.g. coin, jump, hit)
+Error: tone(): bad note "H4" (e.g. "C4", "F#5")
+[1,{"a":[]}]files.tmp:
+GAME
+score.json
+
+files.tmp/GAME:
+main.php
+score.json

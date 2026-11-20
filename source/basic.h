@@ -32,6 +32,11 @@ typedef struct {
 	int  (*swap)(int mode);
 	/* stylus on the touch screen? then x 0-255, y 0-191 (optional) */
 	int  (*touch)(int *x, int *y);
+	/* effect voice (optional): queue a sweep hz0->hz1, volume vol0->vol1
+	 * (0-127) over frames; wave = SND_SQ12..SND_NOISE; replace = clear the
+	 * queue first. tone_queued = segments still waiting or playing. */
+	int  (*tone)(int wave, int hz0, int hz1, int frames, int vol0, int vol1, int replace);
+	int  (*tone_queued)(void);
 } BasicIO;
 
 typedef enum {

@@ -266,6 +266,30 @@ Klang, Tempo, Oktave, Slot wechseln, `PLAY`/`STOP` und `OK`. Oben stehen die Not
 Slots (z. B. `C#4  8` = Achtelnote) und eine Übersicht aller Slots; beim Abspielen wird die
 aktuelle Note markiert. Steuerkreuz: ←→ Slot, ↑↓ Oktave; B/Y/OK schließt den Editor.
 
+### Töne und Effekte
+
+Ohne Sound-Editor gehen Töne und Geräusche auch direkt aus dem Code. Sie laufen auf einer
+eigenen Stimme, also auch über einer Melodie aus `sound()`:
+
+```
+tone(f, ms, w)      Ton f (Hz oder Notenname wie "C4", "F#5", "Eb3"), ms Länge (200),
+                    w Klang: WAVE_SQ12, WAVE_SQ25, WAVE_SQ50 (Standard), WAVE_NOISE
+noise(ms, f)        Rauschen
+sfx("name")         fertiger Effekt, sofort (bricht laufende Töne ab):
+                    blip select coin jump laser hit explosion powerup error
+sound_busy()        true, solange noch eine Melodie oder ein Ton spielt
+sound(-1)           alles stoppen
+```
+
+Mehrere `tone()`-Aufrufe werden nacheinander im Hintergrund gespielt. Ist die Warteschlange
+voll, wartet das Programm kurz, bis wieder Platz ist:
+
+```php
+foreach (["C4", "E4", "G4", "C5"] as $n) tone($n, 150);
+while (sound_busy()) pause(1);
+sfx("coin");
+```
+
 ## Mehrere Dateien
 
 Ein Programm kann aus mehreren Dateien bestehen. `main.php` ist immer da und der Startpunkt von
@@ -327,7 +351,7 @@ Titelbildschirm (oder `LOAD "PONG"`).
 | [PONG](examples/PONG/) | Pong gegen den Computer, bis 7 Punkte. Hardware-Sprites für Schläger und Ball, Sounds für Treffer; `new_ball()` liegt in `ball.php` und wird per `require` eingebunden | Steuerkreuz ↑↓ oder W/S |
 | [PAINT](examples/PAINT/) | Malen mit dem Stylus: `swap_screens(true)` legt die Ausgabe auf den Touchscreen, `touch()` liefert die Position | Farbe antippen oder X, Y löschen, B Ende |
 | [SHAPES](examples/SHAPES/) | Zufällige Formen mit Klassen: Interface `Shape`, abstrakte Klasse `Figure` mit Trait `Colorful`, Unterklassen `Circle`, `Box`, `Square` in `shapes.php` | A neue Formen, B Ende |
-| [SNAKE](examples/SNAKE/) | Snake mit Äpfeln, wird mit jedem Apfel länger und schneller. Körper per `stamp()` in der Grafik, Kopf und Apfel als Sprites | Steuerkreuz oder W/A/S/D |
+| [SNAKE](examples/SNAKE/) | Snake mit Äpfeln, wird mit jedem Apfel länger und schneller. Körper per `stamp()` in der Grafik, Kopf und Apfel als Sprites, Rekord in `snake.json`, Effekte mit `sfx()` | Steuerkreuz oder W/A/S/D |
 
 Sprites (`#SPR`) und Sounds (`#SND`) stehen jeweils in `main.php`.
 
@@ -353,6 +377,29 @@ Ohne SD-Karte meldet der Interpreter beim Start `NO SD CARD`.
 
 Im Emulator melonDS: unter *Config → Emu settings → DLDI* die SD-Emulation aktivieren
 (optional mit „Sync SD to folder“).
+
+## Dateien und JSON
+
+Programme können eigene Dateien lesen und schreiben, etwa Highscores oder Spielstände. Sie liegen
+im Ordner des Programms (`/nds-basic/SPIEL/`). Ein noch nicht gespeichertes Programm schreibt direkt
+nach `/nds-basic/`. Dateinamen bestehen aus Buchstaben, Ziffern, `_`, `-` und `.` (keine Ordner,
+max. 32 Zeichen); `.php`-Dateien gehören dem Editor und können nur gelesen werden.
+
+```
+file_put_contents(f, $s)    Datei schreiben, gibt die Bytes zurück oder false
+                            (3. Argument FILE_APPEND: anhängen; $s darf ein Array sein)
+file_get_contents(f)        Inhalt als String, false wenn nicht vorhanden
+file(f, flags)              Zeilen als Array (FILE_IGNORE_NEW_LINES, FILE_SKIP_EMPTY_LINES)
+file_exists(f)              true, wenn die Datei existiert
+unlink(f)                   Datei löschen
+json_encode($v, flags)      Wert als JSON (JSON_PRETTY_PRINT, JSON_UNESCAPED_SLASHES)
+json_decode($s)             JSON lesen, null bei Fehlern; JSON-Objekte werden immer Arrays
+```
+
+```php
+$best = json_decode(file_get_contents("score.json"))["best"] ?? 0;
+if ($points > $best) file_put_contents("score.json", json_encode(["best" => $points]));
+```
 
 ## Website
 

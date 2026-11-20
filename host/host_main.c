@@ -27,7 +27,7 @@ static int h_sound_busy(void) { return soundFrames > 0; }
 int main(void) {
 	static const BasicIO io = { h_putch, h_cls, NULL, NULL, NULL, 32, NULL,
 	                                    h_pset, h_pget, h_gcls, 256, 192,
-	                                    h_sound, h_sound_busy, NULL, NULL, NULL, NULL };
+	                                    h_sound, h_sound_busy, NULL, NULL, NULL, NULL, NULL, NULL };
 	char line[512];
 	basic_init(&io);
 	h_gcls();

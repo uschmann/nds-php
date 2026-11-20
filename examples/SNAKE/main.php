@@ -4,7 +4,10 @@
 cls(); gcls(); sproff();
 rect(0, 8, 255, 15, 5, 1); rect(0, 184, 255, 191, 5, 1);
 rect(0, 8, 7, 191, 5, 1); rect(248, 8, 255, 191, 5, 1);
-locate(0, 0); echo "SNAKE      PUNKTE: 0";
+// REKORD AUS DER DATEI SNAKE.JSON (IM PROGRAMMORDNER)
+$best = 0;
+if (file_exists("snake.json")) $best = json_decode(file_get_contents("snake.json"))["best"] ?? 0;
+locate(0, 0); echo "SNAKE      PUNKTE: 0"; locate(24, 0); echo "HI: $best";
 $grid = [];   // BELEGTE FELDER: $grid[x][y]
 $body = [];   // KOERPER ALS [x, y], KOPF AM ENDE
 $len = 3; $nx = 1; $ny = 0; $dx = 1; $dy = 0;
@@ -61,9 +64,14 @@ while (true) {
   }
 }
 // GAME OVER
-sound(1);
+sfx("explosion"); sound(1);
 locate(11, 10); echo "GAME OVER";
 locate(9, 12); echo "PUNKTE: $points";
+if ($points > $best) {
+  file_put_contents("snake.json", json_encode(["best" => $points]));
+  locate(8, 14); echo "NEUER REKORD!";
+  sfx("powerup");
+}
 #SPR 2 ....5......5.....AA2AA..AAAAAAA.AAAAAAA.AAAAAAA..AAAAA....A.A...
 #SPR 3 .DDDDDD.DDDDDDDDD1DDDD1DD0DDDD0DDDDDDDDDDDDDDDDDDD2222DD.DDDDDD.
 #SPR 4 555555555DDDDDD55DDDDDD55DD55DD55DD55DD55DDDDDD55DDDDDD555555555

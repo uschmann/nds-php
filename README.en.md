@@ -260,6 +260,30 @@ sound, tempo, octave, change slot, `PLAY`/`STOP` and `OK`. The top screen shows 
 slot (e.g. `C#4  8` = eighth note) and an overview of all slots; during playback the
 current note is highlighted. D-pad: ←→ slot, ↑↓ octave; B/Y/OK closes the editor.
 
+### Tones and effects
+
+Tones and noises also work straight from code, without the sound editor. They play on a voice
+of their own, so also on top of a tune from `sound()`:
+
+```
+tone(f, ms, w)      tone f (Hz or a note name such as "C4", "F#5", "Eb3"), ms length (200),
+                    w sound: WAVE_SQ12, WAVE_SQ25, WAVE_SQ50 (default), WAVE_NOISE
+noise(ms, f)        noise
+sfx("name")         ready-made effect, at once (cuts off queued tones):
+                    blip select coin jump laser hit explosion powerup error
+sound_busy()        true while a tune or a tone is still playing
+sound(-1)           stop everything
+```
+
+Several `tone()` calls play one after the other in the background. When the queue is full the
+program waits briefly until there is room again:
+
+```php
+foreach (["C4", "E4", "G4", "C5"] as $n) tone($n, 150);
+while (sound_busy()) pause(1);
+sfx("coin");
+```
+
 ## Several files
 
 A program can consist of several files. `main.php` always exists and is where `RUN` starts; other
@@ -319,7 +343,7 @@ the folders to `/nds-basic` on the SD card; they then appear in the list on the 
 | [PONG](examples/PONG/) | Pong against the computer, first to 7 points. Hardware sprites for paddles and ball, sounds for hits; `new_ball()` lives in `ball.php` and is pulled in with `require` | d-pad ↑↓ or W/S |
 | [PAINT](examples/PAINT/) | Painting with the stylus: `swap_screens(true)` moves the output to the touch screen, `touch()` returns the position | tap a colour or X, Y clear, B quit |
 | [SHAPES](examples/SHAPES/) | Random shapes with classes: interface `Shape`, abstract class `Figure` with trait `Colorful`, subclasses `Circle`, `Box`, `Square` in `shapes.php` | A new shapes, B quit |
-| [SNAKE](examples/SNAKE/) | Snake with apples, grows longer and faster with every apple. Body drawn with `stamp()` into the graphics, head and apple as sprites | d-pad or W/A/S/D |
+| [SNAKE](examples/SNAKE/) | Snake with apples, grows longer and faster with every apple. Body drawn with `stamp()` into the graphics, head and apple as sprites, high score in `snake.json`, effects with `sfx()` | d-pad or W/A/S/D |
 
 Sprites (`#SPR`) and sounds (`#SND`) are stored in `main.php`.
 
@@ -345,6 +369,29 @@ Without an SD card the interpreter reports `NO SD CARD` at start-up.
 
 In the melonDS emulator: enable SD emulation under *Config → Emu settings → DLDI*
 (optionally with "Sync SD to folder").
+
+## Files and JSON
+
+Programs can read and write files of their own, such as high scores or save games. They live in
+the program's folder (`/nds-basic/GAME/`). A program that has not been saved yet writes straight
+to `/nds-basic/`. File names consist of letters, digits, `_`, `-` and `.` (no folders, max.
+32 characters); `.php` files belong to the editor and are read-only.
+
+```
+file_put_contents(f, $s)    write a file, returns the bytes written or false
+                            (3rd argument FILE_APPEND: append; $s may be an array)
+file_get_contents(f)        contents as a string, false when missing
+file(f, flags)              lines as an array (FILE_IGNORE_NEW_LINES, FILE_SKIP_EMPTY_LINES)
+file_exists(f)              true when the file exists
+unlink(f)                   delete the file
+json_encode($v, flags)      value as JSON (JSON_PRETTY_PRINT, JSON_UNESCAPED_SLASHES)
+json_decode($s)             parse JSON, null on errors; JSON objects always become arrays
+```
+
+```php
+$best = json_decode(file_get_contents("score.json"))["best"] ?? 0;
+if ($points > $best) file_put_contents("score.json", json_encode(["best" => $points]));
+```
 
 ## Website
 

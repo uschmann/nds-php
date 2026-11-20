@@ -201,7 +201,8 @@ static int io_touch(int *x, int *y) {
 
 static const BasicIO bio = { io_putch, io_cls, io_inkey, io_locate, io_color, COLS, io_message,
                               io_pset, io_pget, io_gcls, 256, 192,
-                              io_sound, io_sound_busy, io_exit, io_joy, io_swap, io_touch };
+                              io_sound, io_sound_busy, io_exit, io_joy, io_swap, io_touch,
+                              snd_tone, snd_tone_queued };
 
 static void keyq_push(int c) {
 	int next = (keyqHead + 1) % sizeof keyq;

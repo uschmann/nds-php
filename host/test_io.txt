@@ -1,0 +1,23 @@
+10 $data = ['name' => 'Ada', 'score' => 1250, 'ok' => true, 'pi' => 3.5, 'two' => 2.0, 'tags' => ['a', 'b/c'], 'none' => null, 'empty' => []];
+20 $j = json_encode($data);
+30 echo $j, PHP_EOL;
+40 echo json_encode([1, 2, [3, "x\"y\n"]]), PHP_EOL;
+50 echo json_encode(['a' => 1, 'b' => [1, 2]], JSON_PRETTY_PRINT), PHP_EOL;
+60 echo json_encode("a/b", JSON_UNESCAPED_SLASHES), PHP_EOL;
+70 $back = json_decode($j, true);
+80 var_dump($back == $data);
+90 var_dump(json_decode('{"a": [1, 2.5, -3e2, "é\t", false, null], "b": {}}'));
+100 var_dump(json_decode('[1, 2'), json_decode('{"a" 1}'), json_decode(''), json_decode(' 42 '));
+110 class P { public $x = 1; protected $y = 2; public $list = [1]; }
+120 echo json_encode(new P()), PHP_EOL;
+130 var_dump(file_exists("score.json"));
+140 echo file_put_contents("score.json", json_encode(['best' => 99])), PHP_EOL;
+150 var_dump(file_exists("score.json"));
+160 echo json_decode(file_get_contents("score.json"), true)['best'], PHP_EOL;
+170 file_put_contents("log.txt", "one\n");
+180 file_put_contents("log.txt", ["two\n", "\n", "three"], FILE_APPEND);
+190 print_r(file("log.txt", FILE_IGNORE_NEW_LINES));
+200 print_r(file("log.txt", FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES));
+210 echo count(file("log.txt")), PHP_EOL;
+220 var_dump(unlink("log.txt"), file_exists("log.txt"), file_get_contents("log.txt"), unlink("log.txt"));
+230 tone("A4", 100); tone(440); noise(50); sfx("coin"); var_dump(sound_busy());

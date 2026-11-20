@@ -73,7 +73,7 @@ static char  storageDir[128];
 static char  lastFile[16];
 static int   col;                       /* output column                 */
 static unsigned rndState = 12345;
-static int   waitFrames, waitSound;
+static int   waitFrames, waitSound, waitTone;
 static int   gcolor = 1;
 
 static signed char sprites[BASIC_SPRITES][64];
@@ -4150,6 +4150,417 @@ BI(sound) {
 	return mk_null();
 }
 
+/* tone()/noise()/sfx(): effect voice with a queue of frequency sweeps */
+#define TONE_VOL   80
+#define TONE_BLOCK 16          /* tone() waits while this many segments are queued */
+
+static int ms_frames(int ms) { int f = (ms * 60 + 500) / 1000; return f < 1 ? 1 : f > 600 ? 600 : f; }
+
+/* 440, "A4", "C#5", "Eb3" -> Hz */
+static int tone_hz(Value v) {
+	if (v.t != T_STR) {
+		int hz = to_int(v);
+		if (hz < 20 || hz > 8000) fail("tone(): frequency must be 20-8000 Hz");
+		return hz;
+	}
+	const char *s = v.u.s->s;
+	static const signed char semis[7] = { 9, 11, 0, 2, 4, 5, 7 };   /* A B C D E F G */
+	char c = (char)toupper((unsigned char)*s);
+	if (c < 'A' || c > 'G') fail("tone(): bad note \"%.10s\" (e.g. \"C4\", \"F#5\")", s);
+	int semi = semis[c - 'A'];
+	s++;
+	if (*s == '#') { semi++; s++; } else if (*s == 'b') { semi--; s++; } else if (*s == '-') s++;
+	if (!isdigit((unsigned char)*s) || s[1]) fail("tone(): bad note \"%.10s\" (e.g. \"C4\", \"F#5\")", v.u.s->s);
+	int midi = (*s - '0' + 1) * 12 + semi;
+	return (int)(440.0f * powf(2.0f, (midi - 69) / 12.0f) + 0.5f);
+}
+
+static void tone_seg(int wave, int hz0, int hz1, int frames, int v0, int v1, int replace) {
+	if (io->tone) io->tone(wave, hz0, hz1, frames, v0, v1, replace);
+}
+
+static void queue_tone(int wave, int hz, int ms) {
+	int f = ms_frames(ms);
+	if (f >= 3) { tone_seg(wave, hz, hz, f - 1, TONE_VOL, TONE_VOL, 0); tone_seg(wave, hz, hz, 1, 0, 0, 0); }
+	else tone_seg(wave, hz, hz, f, TONE_VOL, TONE_VOL, 0);
+	if (io->tone_queued && io->tone_queued() >= TONE_BLOCK) waitTone = 1;
+}
+
+BI(tone) {
+	int hz = tone_hz(a[0]), ms = n > 1 ? to_int(a[1]) : 200, w = n > 2 ? to_int(a[2]) : SND_SQ50;
+	if (w < 0 || w > SND_NOISE) fail("tone(): wave must be 0-3 (WAVE_SQ12 .. WAVE_NOISE)");
+	if (hz && ms > 0) queue_tone(w, hz, ms);
+	return mk_null();
+}
+
+BI(noise) {
+	int ms = n ? to_int(a[0]) : 200, hz = n > 1 ? tone_hz(a[1]) : 2000;
+	if (ms > 0) queue_tone(SND_NOISE, hz, ms);
+	return mk_null();
+}
+
+BI(sfx) {
+	UNUSED;
+	/* name, then segments: wave, hz0, hz1, frames, vol0, vol1 (wave -1 ends) */
+	static const struct { const char *name; short seg[5][6]; } fx[] = {
+		{ "blip",      { { 2, 1200, 1200, 3, 80, 40 }, { -1 } } },
+		{ "select",    { { 2, 1568, 1568, 4, 80, 80 }, { 2, 2093, 2093, 7, 80, 0 }, { -1 } } },
+		{ "coin",      { { 2, 988, 988, 5, 90, 90 }, { 2, 1319, 1319, 18, 90, 0 }, { -1 } } },
+		{ "jump",      { { 1, 280, 820, 12, 90, 30 }, { -1 } } },
+		{ "laser",     { { 0, 1800, 250, 10, 90, 20 }, { -1 } } },
+		{ "hit",       { { 3, 900, 250, 9, 110, 0 }, { -1 } } },
+		{ "explosion", { { 3, 700, 60, 45, 127, 0 }, { -1 } } },
+		{ "powerup",   { { 2, 523, 523, 5, 80, 80 }, { 2, 659, 659, 5, 80, 80 }, { 2, 784, 784, 5, 80, 80 }, { 2, 1047, 1047, 14, 80, 0 }, { -1 } } },
+		{ "error",     { { 2, 220, 220, 9, 90, 90 }, { 2, 220, 220, 3, 0, 0 }, { 2, 150, 150, 16, 90, 0 }, { -1 } } },
+		{ NULL, { { -1 } } }
+	};
+	const char *name = S(0, NULL);
+	for (int i = 0; fx[i].name; i++) {
+		if (strcasecmp(fx[i].name, name)) continue;
+		for (int k = 0; k < 5 && fx[i].seg[k][0] >= 0; k++) {
+			const short *g = fx[i].seg[k];
+			tone_seg(g[0], g[1], g[2], g[3], g[4], g[5], k == 0);
+		}
+		return mk_null();
+	}
+	fail("sfx(): unknown effect \"%.12s\" (e.g. coin, jump, hit)", name);
+}
+
+BI(sound_busy) {
+	UNUSED;
+	return mk_bool((io->sound_busy && io->sound_busy()) || (io->tone_queued && io->tone_queued() > 0));
+}
+
+/* --- files: data files of the program --- */
+
+/* Files live in the program's folder (storage/NAME/), for unsaved programs
+ * directly in the storage folder. Names: letters, digits, _ - . (no paths);
+ * .php files can be read but not written, the editor owns them. */
+static int data_path(Value v, char *path, int write, const char *fn) {
+	int len;
+	const char *name = sval(v, &len);
+	if (len < 1 || len > 32 || name[0] == '.') fail("%s(): bad file name \"%.32s\"", fn, name);
+	for (int i = 0; i < len; i++)
+		if (!isalnum((unsigned char)name[i]) && name[i] != '_' && name[i] != '-' && name[i] != '.')
+			fail("%s(): bad file name \"%.32s\" (no folders)", fn, name);
+	if (write && len > 4 && !strcasecmp(name + len - 4, ".php")) fail("%s(): .php files belong to the editor", fn);
+	if (!storageDir[0]) return 0;
+	if (lastFile[0] && !strchr(lastFile, '.')) {
+		snprintf(path, 200, "%.127s/%.15s", storageDir, lastFile);
+		if (write) mkdir(path, 0777);
+		snprintf(path, 200, "%.127s/%.15s/%.32s", storageDir, lastFile, name);
+	} else snprintf(path, 200, "%.127s/%.32s", storageDir, name);
+	return 1;
+}
+
+/* whole file into a Buf; 0 = cannot open */
+static int read_all(const char *path, Buf *b) {
+	FILE *fp = fopen(path, "rb");
+	if (!fp) return 0;
+	char chunk[512];
+	size_t r;
+	while ((r = fread(chunk, 1, sizeof chunk, fp)) > 0) {
+		if (b->n + (int)r > STR_LIMIT) { fclose(fp); free(b->p); b->p = NULL; fail("File too large (max. %d KB)", STR_LIMIT / 1024); }
+		buf_add(b, chunk, (int)r);
+	}
+	fclose(fp);
+	return 1;
+}
+
+BI(file_get_contents) {
+	UNUSED;
+	char path[200];
+	Buf b = { 0 };
+	if (!data_path(a[0], path, 0, "file_get_contents") || !read_all(path, &b)) return mk_bool(0);
+	return buf_value(&b);
+}
+
+BI(file_put_contents) {
+	char path[200];
+	int flags = n > 2 ? to_int(a[2]) : 0;
+	if (!data_path(a[0], path, 1, "file_put_contents")) return mk_bool(0);
+	FILE *fp = fopen(path, (flags & 8) ? "ab" : "wb");
+	if (!fp) return mk_bool(0);
+	long total = 0;
+	int ok = 1, len;
+	if (a[1].t == T_ARR) {
+		for (int i = 0; i < a[1].u.a->n && ok; i++) {
+			const char *s = sval(a[1].u.a->e[i].val, &len);
+			ok = fwrite(s, 1, len, fp) == (size_t)len;
+			total += len;
+		}
+	} else {
+		const char *s = sval(a[1], &len);
+		ok = fwrite(s, 1, len, fp) == (size_t)len;
+		total = len;
+	}
+	if (fclose(fp) != 0) ok = 0;
+	return ok ? mk_int((int)total) : mk_bool(0);
+}
+
+BI(file) {
+	char path[200];
+	int flags = n > 1 ? to_int(a[1]) : 0;
+	Buf b = { 0 };
+	if (!data_path(a[0], path, 0, "file") || !read_all(path, &b)) return mk_bool(0);
+	Value r = mk_arr();
+	for (int i = 0; i < b.n;) {
+		int j = i;
+		while (j < b.n && b.p[j] != '\n') j++;
+		int end = j < b.n ? j + 1 : j, e = end;
+		if (flags & 2) { e = j; if (e > i && b.p[e - 1] == '\r') e--; }
+		if (!((flags & 4) && (flags & 2) && e == i)) arr_push(r.u.a, mk_str(b.p + i, e - i));
+		i = end;
+	}
+	free(b.p);
+	return r;
+}
+
+BI(file_exists) {
+	UNUSED;
+	char path[200];
+	struct stat st;
+	return mk_bool(data_path(a[0], path, 0, "file_exists") && stat(path, &st) == 0);
+}
+
+BI(unlink) {
+	UNUSED;
+	char path[200];
+	return mk_bool(data_path(a[0], path, 1, "unlink") && remove(path) == 0);
+}
+
+/* --- JSON --- */
+
+static int json_str(Buf *b, const char *s, int len, int flags) {
+	buf_add(b, "\"", 1);
+	for (int i = 0; i < len; i++) {
+		unsigned char c = (unsigned char)s[i];
+		char t[8];
+		switch (c) {
+		case '"':  buf_add(b, "\\\"", 2); break;
+		case '\\': buf_add(b, "\\\\", 2); break;
+		case '/':  if (flags & 64) buf_add(b, "/", 1); else buf_add(b, "\\/", 2); break;
+		case '\n': buf_add(b, "\\n", 2); break;
+		case '\r': buf_add(b, "\\r", 2); break;
+		case '\t': buf_add(b, "\\t", 2); break;
+		case '\b': buf_add(b, "\\b", 2); break;
+		case '\f': buf_add(b, "\\f", 2); break;
+		default:
+			if (c < 32) { sprintf(t, "\\u%04x", c); buf_adds(b, t); }
+			else buf_add(b, (const char *)&c, 1);
+		}
+	}
+	buf_add(b, "\"", 1);
+	return 1;
+}
+
+static void json_nl(Buf *b, int flags, int depth) {
+	if (!(flags & 128)) return;
+	buf_add(b, "\n", 1);
+	for (int i = 0; i < depth; i++) buf_add(b, "    ", 4);
+}
+
+static int json_enc(Buf *b, Value v, int flags, int depth) {
+	char t[48];
+	int l;
+	if (depth > 32) return 0;
+	switch (v.t) {
+	case T_NULL: buf_adds(b, "null"); return 1;
+	case T_BOOL: buf_adds(b, v.u.i ? "true" : "false"); return 1;
+	case T_INT: sprintf(t, "%d", v.u.i); buf_adds(b, t); return 1;
+	case T_FLOAT:
+		if (isnan(v.u.f) || isinf(v.u.f)) return 0;
+		l = fmt_float(t, v.u.f);
+		if (!strpbrk(t, ".EN")) strcpy(t + l, ".0");
+		buf_adds(b, t);
+		return 1;
+	case T_STR: return json_str(b, v.u.s->s, v.u.s->len, flags);
+	case T_ARR: {
+		Arr *a = v.u.a;
+		int list = 1;
+		for (int i = 0; i < a->n && list; i++) list = a->e[i].key.t == T_INT && a->e[i].key.u.i == i;
+		if (!a->n) { buf_adds(b, "[]"); return 1; }
+		buf_add(b, list ? "[" : "{", 1);
+		for (int i = 0; i < a->n; i++) {
+			if (i) buf_add(b, ",", 1);
+			json_nl(b, flags, depth + 1);
+			if (!list) {
+				const char *k = sval(a->e[i].key, &l);
+				json_str(b, k, l, flags);
+				buf_adds(b, (flags & 128) ? ": " : ":");
+			}
+			if (!json_enc(b, a->e[i].val, flags, depth + 1)) return 0;
+		}
+		json_nl(b, flags, depth);
+		buf_add(b, list ? "]" : "}", 1);
+		return 1;
+	}
+	case T_OBJ: {
+		/* public properties as a JSON object */
+		Obj *o = v.u.o;
+		Class *k = &classes[o->cls];
+		int n = o->nprops + (o->dyn ? o->dyn->n : 0), first = 1;
+		buf_add(b, "{", 1);
+		for (int i = 0; i < n; i++) {
+			const char *pn;
+			Value pv;
+			if (i < o->nprops) { if (k->props[i].vis != VIS_PUBLIC) continue; pn = k->props[i].name; pv = o->props[i]; }
+			else { Entry *e = &o->dyn->e[i - o->nprops]; pn = sval(e->key, NULL); pv = e->val; }
+			if (!first) buf_add(b, ",", 1);
+			first = 0;
+			json_nl(b, flags, depth + 1);
+			json_str(b, pn, (int)strlen(pn), flags);
+			buf_adds(b, (flags & 128) ? ": " : ":");
+			if (!json_enc(b, pv, flags, depth + 1)) return 0;
+		}
+		if (!first) json_nl(b, flags, depth);
+		buf_add(b, "}", 1);
+		return 1;
+	}
+	default: return 0;
+	}
+}
+
+BI(json_encode) {
+	Buf b = { 0 };
+	if (!json_enc(&b, a[0], n > 1 ? to_int(a[1]) : 0, 0)) { free(b.p); return mk_bool(0); }
+	return buf_value(&b);
+}
+
+/* JSON parser; objects become associative arrays */
+typedef struct { const char *p, *end; int err; } Json;
+
+static void js_ws(Json *j) { while (j->p < j->end && (*j->p == ' ' || *j->p == '\t' || *j->p == '\n' || *j->p == '\r')) j->p++; }
+
+static int js_lit(Json *j, const char *w) {
+	int l = (int)strlen(w);
+	if (j->end - j->p < l || memcmp(j->p, w, l)) return 0;
+	j->p += l;
+	return 1;
+}
+
+static int js_hex4(Json *j) {
+	if (j->end - j->p < 4) return -1;
+	int u = 0;
+	for (int i = 0; i < 4; i++) {
+		char c = *j->p++;
+		u = u * 16 + (isdigit((unsigned char)c) ? c - '0' : (c >= 'a' && c <= 'f') ? c - 'a' + 10 : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -100);
+		if (u < 0) return -1;
+	}
+	return u;
+}
+
+static Value js_string(Json *j) {
+	Buf b = { 0 };
+	j->p++;
+	while (j->p < j->end && *j->p != '"') {
+		char c = *j->p++;
+		if ((unsigned char)c < 32) { j->err = 1; break; }
+		if (c != '\\') { buf_add(&b, &c, 1); continue; }
+		if (j->p >= j->end) { j->err = 1; break; }
+		c = *j->p++;
+		const char *m = strchr("\"\"\\\\//b\bf\fn\nr\rt\t", c);
+		if (c && m && ((m - "\"\"\\\\//b\bf\fn\nr\rt\t") & 1) == 0) { buf_add(&b, m + 1, 1); continue; }
+		if (c != 'u') { j->err = 1; break; }
+		int u = js_hex4(j);
+		if (u < 0) { j->err = 1; break; }
+		if (u >= 0xD800 && u < 0xDC00 && j->end - j->p >= 6 && j->p[0] == '\\' && j->p[1] == 'u') {
+			j->p += 2;
+			int lo = js_hex4(j);
+			if (lo < 0xDC00 || lo > 0xDFFF) { j->err = 1; break; }
+			u = 0x10000 + ((u - 0xD800) << 10) + (lo - 0xDC00);
+		}
+		char t[4];
+		int l;
+		if (u < 0x80) { t[0] = (char)u; l = 1; }
+		else if (u < 0x800) { t[0] = (char)(0xC0 | u >> 6); t[1] = (char)(0x80 | (u & 63)); l = 2; }
+		else if (u < 0x10000) { t[0] = (char)(0xE0 | u >> 12); t[1] = (char)(0x80 | (u >> 6 & 63)); t[2] = (char)(0x80 | (u & 63)); l = 3; }
+		else { t[0] = (char)(0xF0 | u >> 18); t[1] = (char)(0x80 | (u >> 12 & 63)); t[2] = (char)(0x80 | (u >> 6 & 63)); t[3] = (char)(0x80 | (u & 63)); l = 4; }
+		buf_add(&b, t, l);
+	}
+	if (j->p >= j->end) j->err = 1;
+	else j->p++;
+	return buf_value(&b);
+}
+
+static Value js_value(Json *j, int depth) {
+	js_ws(j);
+	if (j->p >= j->end || depth > 64) { j->err = 1; return mk_null(); }
+	char c = *j->p;
+	if (c == '"') return js_string(j);
+	if (c == '[' || c == '{') {
+		int obj = c == '{';
+		Value r = mk_arr();
+		j->p++;
+		js_ws(j);
+		if (j->p < j->end && *j->p == (obj ? '}' : ']')) { j->p++; return r; }
+		while (!j->err) {
+			Value key = mk_null();
+			if (obj) {
+				js_ws(j);
+				if (j->p >= j->end || *j->p != '"') { j->err = 1; break; }
+				key = js_string(j);
+				js_ws(j);
+				if (j->err || j->p >= j->end || *j->p != ':') { release(key); j->err = 1; break; }
+				j->p++;
+			}
+			Value v = js_value(j, depth + 1);
+			if (obj) { arr_set(r.u.a, key, v); release(key); }
+			else arr_push(r.u.a, v);
+			if (j->err) break;
+			js_ws(j);
+			if (j->p < j->end && *j->p == ',') { j->p++; continue; }
+			if (j->p < j->end && *j->p == (obj ? '}' : ']')) { j->p++; return r; }
+			j->err = 1;
+		}
+		return r;
+	}
+	if (js_lit(j, "true")) return mk_bool(1);
+	if (js_lit(j, "false")) return mk_bool(0);
+	if (js_lit(j, "null")) return mk_null();
+	/* number: -?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)? */
+	const char *s = j->p;
+	int isFloat = 0;
+	if (j->p < j->end && *j->p == '-') j->p++;
+	if (j->p >= j->end || !isdigit((unsigned char)*j->p)) { j->err = 1; return mk_null(); }
+	if (*j->p == '0') j->p++;
+	else while (j->p < j->end && isdigit((unsigned char)*j->p)) j->p++;
+	if (j->p < j->end && *j->p == '.') {
+		j->p++;
+		isFloat = 1;
+		if (j->p >= j->end || !isdigit((unsigned char)*j->p)) { j->err = 1; return mk_null(); }
+		while (j->p < j->end && isdigit((unsigned char)*j->p)) j->p++;
+	}
+	if (j->p < j->end && (*j->p == 'e' || *j->p == 'E')) {
+		j->p++;
+		isFloat = 1;
+		if (j->p < j->end && (*j->p == '+' || *j->p == '-')) j->p++;
+		if (j->p >= j->end || !isdigit((unsigned char)*j->p)) { j->err = 1; return mk_null(); }
+		while (j->p < j->end && isdigit((unsigned char)*j->p)) j->p++;
+	}
+	char t[40];
+	int l = (int)(j->p - s);
+	if (l >= (int)sizeof t) l = sizeof t - 1;
+	memcpy(t, s, l);
+	t[l] = 0;
+	if (!isFloat) {
+		long long v = strtoll(t, NULL, 10);
+		if (v >= -2147483647LL - 1 && v <= 2147483647LL) return mk_int((int)v);
+	}
+	return mk_float(strtof(t, NULL));
+}
+
+BI(json_decode) {
+	UNUSED;
+	int len;
+	const char *s = S(0, &len);
+	Json j = { s, s + len, 0 };
+	Value v = js_value(&j, 0);
+	js_ws(&j);
+	if (j.err || j.p != j.end) { release(v); return mk_null(); }
+	return v;
+}
+
 #undef S
 
 typedef struct { const char *name; BuiltinFn fn; signed char minA, maxA, ref; } Builtin;
@@ -4210,7 +4621,11 @@ static const Builtin builtins[] = {
 	{ "paint", bi_paint, 2, 3, 0 }, { "point", bi_point, 2, 2, 0 },
 	{ "sprite", bi_sprite, 4, 5, 0 }, { "sproff", bi_sproff, 0, 1, 0 }, { "sprhit", bi_sprhit, 2, 2, 0 },
 	{ "stamp", bi_stamp, 3, 4, 0 }, { "sprset", bi_sprset, 4, 4, 0 },
-	{ "sound", bi_sound, 1, 2, 0 },
+	{ "sound", bi_sound, 1, 2, 0 }, { "sound_busy", bi_sound_busy, 0, 0, 0 },
+	{ "tone", bi_tone, 1, 3, 0 }, { "noise", bi_noise, 0, 2, 0 }, { "sfx", bi_sfx, 1, 1, 0 },
+	{ "file_get_contents", bi_file_get_contents, 1, 1, 0 }, { "file_put_contents", bi_file_put_contents, 2, 3, 0 },
+	{ "file", bi_file, 1, 2, 0 }, { "file_exists", bi_file_exists, 1, 1, 0 }, { "unlink", bi_unlink, 1, 1, 0 },
+	{ "json_encode", bi_json_encode, 1, 2, 0 }, { "json_decode", bi_json_decode, 1, 3, 0 },
 	{ NULL, NULL, 0, 0, 0 }
 };
 
@@ -4247,6 +4662,9 @@ static int find_constant(const char *name, Value *out) {
 		{ "STR_PAD_LEFT", 0 }, { "STR_PAD_RIGHT", 1 }, { "STR_PAD_BOTH", 2 },
 		{ "JOY_UP", 1 }, { "JOY_DOWN", 2 }, { "JOY_LEFT", 4 }, { "JOY_RIGHT", 8 }, { "JOY_A", 16 },
 		{ "JOY_B", 32 }, { "JOY_X", 64 }, { "JOY_Y", 128 }, { "JOY_L", 256 }, { "JOY_R", 512 },
+		{ "WAVE_SQ12", 0 }, { "WAVE_SQ25", 1 }, { "WAVE_SQ50", 2 }, { "WAVE_NOISE", 3 },
+		{ "FILE_IGNORE_NEW_LINES", 2 }, { "FILE_SKIP_EMPTY_LINES", 4 }, { "FILE_APPEND", 8 },
+		{ "JSON_UNESCAPED_SLASHES", 64 }, { "JSON_PRETTY_PRINT", 128 },
 		{ NULL, 0 }
 	};
 	for (int i = 0; ints[i].n; i++) if (!strcmp(ints[i].n, name)) { *out = mk_int(ints[i].v); return 1; }
@@ -4913,7 +5331,7 @@ static void report_error(void) {
 	out_ch('\n');
 	vm_reset();
 	state = BASIC_IDLE;
-	waitFrames = waitSound = 0;
+	waitFrames = waitSound = waitTone = 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -4966,7 +5384,7 @@ int basic_enter(const char *src, int *lineNum) {
 	strcpy(pendingCmd, buf);
 	lastError[0] = 0;
 	lastErrorLine = -1;
-	waitFrames = waitSound = 0;
+	waitFrames = waitSound = waitTone = 0;
 	state = BASIC_RUNNING;
 	return BASIC_ENTER_EXEC;
 }
@@ -4984,8 +5402,12 @@ int basic_run_slice(int maxStatements) {
 		if (io->sound_busy && io->sound_busy()) return 0;
 		waitSound = 0;
 	}
+	if (waitTone) {
+		if (io->tone_queued && io->tone_queued() >= TONE_BLOCK) return 0;
+		waitTone = 0;
+	}
 	int limit = maxStatements * 32;
-	while (done < limit && state == BASIC_RUNNING && waitFrames == 0 && !waitSound) {
+	while (done < limit && state == BASIC_RUNNING && waitFrames == 0 && !waitSound && !waitTone) {
 		exec_one();
 		done++;
 	}
@@ -5020,7 +5442,7 @@ void basic_break(void) {
 	vm_reset();
 	pendingCmd[0] = 0;
 	state = BASIC_IDLE;
-	waitFrames = waitSound = 0;
+	waitFrames = waitSound = waitTone = 0;
 }
 
 int basic_sprite_get(int sl, int x, int y) {

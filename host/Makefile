@@ -45,5 +45,16 @@ test-multi: basic
 	ls files.tmp/MULTI
 	rm -rf files.tmp
 
+# files and JSON: data files live in the program folder (or the storage root)
+test-io: basic
+	rm -rf files.tmp && mkdir files.tmp
+	(cat test_io.txt; echo RUN; echo 'SAVE "GAME"'; echo 'echo file_get_contents("score.json");'; echo RUN; \
+	 echo 'file_put_contents("x.php", "");'; echo 'file_get_contents("../x");'; echo 'sfx("boom");'; \
+	 echo 'tone("H4");'; echo 'echo json_encode(json_decode("[1,{\"a\":[]}]"));') \
+	 | BASIC_DIR=files.tmp ./basic > test.out
+	ls files.tmp files.tmp/GAME >> test.out
+	diff -u test_io.expected test.out && echo "io test passed"
+	rm -rf files.tmp test.out
+
 clean:
 	rm -f basic test.out
