@@ -19,7 +19,7 @@ an old home computer, but in a PHP dialect.
 Only Docker is required (image `devkitpro/devkitarm`):
 
 ```bash
-./build.sh          # creates nds-basic.nds
+./build.sh          # creates nds-php.nds
 ./build.sh clean
 ```
 
@@ -386,7 +386,7 @@ If the program in memory changed since the last `SAVE`/`LOAD`, `LOAD` asks befor
 ## Examples
 
 The [`examples/`](examples/) folder contains ready-made programs, each as a folder. To try them, copy
-the folders to `/nds-basic` on the SD card; they then appear in the list on the title screen
+the folders to `/nds-php` on the SD card; they then appear in the list on the title screen
 (or use `LOAD "PONG"`).
 
 | Program | Contents | Controls |
@@ -400,11 +400,11 @@ Sprites (`#SPR`) and sounds (`#SND`) are stored in `main.php`.
 
 ## Saving
 
-Programs are saved on the SD card (flashcart via DLDI or DSi SD) under `/nds-basic`, one folder per
+Programs are saved on the SD card (flashcart via DLDI or DSi SD) under `/nds-php`, one folder per
 program:
 
 ```
-SAVE "GAME"       saves as /nds-basic/GAME/main.php, util.php … (SAVE without a name = last name)
+SAVE "GAME"       saves as /nds-php/GAME/main.php, util.php … (SAVE without a name = last name)
 LOAD "GAME"       loads the program (replaces the current one)
 DIR               lists all programs
 DELETE "GAME"     deletes the program and its folder
@@ -415,8 +415,9 @@ the lines exactly as in the editor (including indentation and blank lines), so i
 the PC. `SAVE` removes files from the folder that no longer belong to the program. Used sprites and
 sounds are appended to `main.php` as PHP comments: `#SPR n` + 64 characters (`.` = transparent,
 `0`–`F` = colour) and `#SND n sound tempo note:length …` (note as MIDI number, 0 = rest, length in
-16ths). Older programs saved as a single file (`/nds-basic/NAME.PHP`) can still be loaded.
-Without an SD card the interpreter reports `NO SD CARD` at start-up.
+16ths). Older programs saved as a single file (`/nds-php/NAME.PHP`) can still be loaded.
+Without an SD card the interpreter reports `NO SD CARD` at start-up. Programs of older versions
+(folder `/nds-basic`) are left alone; copy them to `/nds-php` to use them here.
 
 In the melonDS emulator: enable SD emulation under *Config → Emu settings → DLDI*
 (optionally with "Sync SD to folder").
@@ -424,8 +425,8 @@ In the melonDS emulator: enable SD emulation under *Config → Emu settings → 
 ## Files and JSON
 
 Programs can read and write files of their own, such as high scores or save games. They live in
-the program's folder (`/nds-basic/GAME/`). A program that has not been saved yet writes straight
-to `/nds-basic/`. File names consist of letters, digits, `_`, `-` and `.` (no folders, max.
+the program's folder (`/nds-php/GAME/`). A program that has not been saved yet writes straight
+to `/nds-php/`. File names consist of letters, digits, `_`, `-` and `.` (no folders, max.
 32 characters); `.php` files belong to the editor and are read-only.
 
 ```
@@ -449,7 +450,7 @@ if ($points > $best) file_put_contents("score.json", json_encode(["best" => $poi
 The landing page lives in [`site/`](site/), in English (`index.html`, `docs.html`) and German
 (`index.de.html`, `docs.de.html`) with a language switch in the header. The workflow
 [`.github/workflows/pages.yml`](.github/workflows/pages.yml) builds the ROM in the devkitPro container
-on every push to `main`, assembles the site with `nds-basic.nds`, this README and the German one
+on every push to `main`, assembles the site with `nds-php.nds`, this README and the German one
 (as documentation pages) and the examples, and publishes it via GitHub Pages.
 
 One-time repository setting: *Settings → Pages → Build and deployment → Source: GitHub Actions*.

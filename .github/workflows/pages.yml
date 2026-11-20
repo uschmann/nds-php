@@ -1,5 +1,5 @@
 # Builds the ROM with the devkitPro toolchain and deploys the landing page
-# (site/) together with nds-basic.nds, the README (docs) and the examples
+# (site/) together with nds-php.nds, the README (docs) and the examples
 # to GitHub Pages.
 #
 # One-time setup: Settings -> Pages -> Build and deployment -> Source: "GitHub Actions"

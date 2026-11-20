@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build nds-basic.nds with the devkitPro docker toolchain.
+# Build nds-php.nds with the devkitPro docker toolchain.
 #   ./build.sh          -> build
 #   ./build.sh clean    -> clean
 set -e

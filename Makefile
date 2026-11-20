@@ -24,7 +24,7 @@ include $(DEVKITARM)/ds_rules
 # ICON is the image used to create the game icon, leave blank to use default rule
 # NITRO is a directory that will be accessible via NitroFS
 #---------------------------------------------------------------------------------
-TARGET   := nds-basic
+TARGET   := nds-php
 BUILD    := build
 SOURCES  := source
 INCLUDES := include

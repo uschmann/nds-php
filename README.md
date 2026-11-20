@@ -19,7 +19,7 @@ direkt auf dem Gerät, wie früher am Heimcomputer, aber in einem PHP-Dialekt.
 Benötigt nur Docker (Image `devkitpro/devkitarm`):
 
 ```bash
-./build.sh          # erzeugt nds-basic.nds
+./build.sh          # erzeugt nds-php.nds
 ./build.sh clean
 ```
 
@@ -396,7 +396,7 @@ nach.
 ## Beispiele
 
 Im Ordner [`examples/`](examples/) liegen fertige Programme, jeweils als Ordner. Zum Ausprobieren
-die Ordner auf die SD-Karte nach `/nds-basic` kopieren; sie erscheinen dann in der Liste auf dem
+die Ordner auf die SD-Karte nach `/nds-php` kopieren; sie erscheinen dann in der Liste auf dem
 Titelbildschirm (oder `LOAD "PONG"`).
 
 | Programm | Inhalt | Steuerung |
@@ -410,11 +410,11 @@ Sprites (`#SPR`) und Sounds (`#SND`) stehen jeweils in `main.php`.
 
 ## Speichern
 
-Programme werden auf der SD-Karte (Flashcart per DLDI oder DSi-SD) unter `/nds-basic` als Ordner
+Programme werden auf der SD-Karte (Flashcart per DLDI oder DSi-SD) unter `/nds-php` als Ordner
 gespeichert, ein Ordner pro Programm:
 
 ```
-SAVE "SPIEL"      speichert als /nds-basic/SPIEL/main.php, util.php … (SAVE ohne Namen = letzter Name)
+SAVE "SPIEL"      speichert als /nds-php/SPIEL/main.php, util.php … (SAVE ohne Namen = letzter Name)
 LOAD "SPIEL"      lädt das Programm (ersetzt das aktuelle)
 DIR               listet alle Programme
 DELETE "SPIEL"    löscht das Programm samt Ordner
@@ -425,8 +425,9 @@ Zeilen genau wie im Editor (samt Einrückung und Leerzeilen), kann also am PC be
 Dateien, die nicht mehr zum Programm gehören, entfernt `SAVE` aus dem Ordner. Benutzte Sprites und
 Sounds stehen am Ende von `main.php` als PHP-Kommentare: `#SPR n` + 64 Zeichen (`.` = transparent,
 `0`–`F` = Farbe) und `#SND n klang tempo note:länge …` (Note als MIDI-Nummer, 0 = Pause, Länge in
-16teln). Ältere Programme als einzelne Datei (`/nds-basic/NAME.PHP`) lassen sich weiterhin laden.
-Ohne SD-Karte meldet der Interpreter beim Start `NO SD CARD`.
+16teln). Ältere Programme als einzelne Datei (`/nds-php/NAME.PHP`) lassen sich weiterhin laden.
+Ohne SD-Karte meldet der Interpreter beim Start `NO SD CARD`. Programme aus älteren Versionen
+(Ordner `/nds-basic`) bleiben dort unberührt; zum Weiterverwenden einfach nach `/nds-php` kopieren.
 
 Im Emulator melonDS: unter *Config → Emu settings → DLDI* die SD-Emulation aktivieren
 (optional mit „Sync SD to folder“).
@@ -434,8 +435,8 @@ Im Emulator melonDS: unter *Config → Emu settings → DLDI* die SD-Emulation a
 ## Dateien und JSON
 
 Programme können eigene Dateien lesen und schreiben, etwa Highscores oder Spielstände. Sie liegen
-im Ordner des Programms (`/nds-basic/SPIEL/`). Ein noch nicht gespeichertes Programm schreibt direkt
-nach `/nds-basic/`. Dateinamen bestehen aus Buchstaben, Ziffern, `_`, `-` und `.` (keine Ordner,
+im Ordner des Programms (`/nds-php/SPIEL/`). Ein noch nicht gespeichertes Programm schreibt direkt
+nach `/nds-php/`. Dateinamen bestehen aus Buchstaben, Ziffern, `_`, `-` und `.` (keine Ordner,
 max. 32 Zeichen); `.php`-Dateien gehören dem Editor und können nur gelesen werden.
 
 ```
@@ -459,7 +460,7 @@ if ($points > $best) file_put_contents("score.json", json_encode(["best" => $poi
 Die Landingpage liegt in [`site/`](site/), auf Englisch (`index.html`, `docs.html`) und Deutsch
 (`index.de.html`, `docs.de.html`) mit Sprachumschalter im Kopf. Der Workflow
 [`.github/workflows/pages.yml`](.github/workflows/pages.yml) baut bei jedem Push auf `main` die ROM im
-devkitPro-Container, setzt die Seite mit `nds-basic.nds`, dieser README und der englischen (als Doku-Seiten) und den
+devkitPro-Container, setzt die Seite mit `nds-php.nds`, dieser README und der englischen (als Doku-Seiten) und den
 Beispielen zusammen und veröffentlicht sie über GitHub Pages.
 
 Einmalig im Repository einstellen: *Settings → Pages → Build and deployment → Source: GitHub Actions*.

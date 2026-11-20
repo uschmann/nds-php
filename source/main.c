@@ -323,7 +323,7 @@ static void io_message(const char *m) {
 	if (!strncmp(m, "LOADED", 6)) ed_reset();
 }
 
-/* mount SD card / flashcart (DLDI) and use <device>:/nds-basic for files */
+/* mount SD card / flashcart (DLDI) and use <device>:/nds-php for files */
 static void storage_init(void) {
 	static char dir[64];
 	if (!fatInitDefault()) {
@@ -333,8 +333,9 @@ static void storage_init(void) {
 	char cwd[64] = "";
 	if (!getcwd(cwd, sizeof cwd)) cwd[0] = 0;
 	char *colon = strchr(cwd, ':');
-	if (colon) { colon[1] = 0; snprintf(dir, sizeof dir, "%s/nds-basic", cwd); }
-	else strcpy(dir, "/nds-basic");
+	if (colon) colon[1] = 0;
+	else cwd[0] = 0;
+	snprintf(dir, sizeof dir, "%s/nds-php", cwd);
 	mkdir(dir, 0777);
 	struct stat st;
 	if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) {

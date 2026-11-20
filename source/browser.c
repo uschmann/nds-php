@@ -1,7 +1,7 @@
 /*
  * browser.c - file browser for the saved programs (bottom screen)
  *
- * Level 1 lists the programs in /nds-basic (project folders and old single
+ * Level 1 lists the programs in /nds-php (project folders and old single
  * files), level 2 the files of one program. The selected entry is previewed
  * on the top screen (rendered by main.c from browser_preview_*()).
  * Loading and deleting whole programs is done by the interpreter (main.c
