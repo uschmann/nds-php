@@ -307,7 +307,7 @@ static void separate(Value *v) {
 /* classes, interfaces, traits                                         */
 /* ------------------------------------------------------------------ */
 
-#define CLASSES_MAX 48
+#define CLASSES_MAX 80          /* incl. the built-in exception classes */
 #define CPROPS_MAX  24
 #define CMETH_MAX   32
 #define CCONST_MAX  16
@@ -517,6 +517,13 @@ static void link_class(int c) {
 				errLineSet(k->line);
 				fail("Class %s must implement %s()", k->name, k->methods[i].name);
 			}
+	/* the tables were allocated for the worst case: shrink them */
+	CProp *np = realloc(k->props, (k->nprops ? k->nprops : 1) * sizeof(CProp));
+	CMethod *nm = realloc(k->methods, (k->nmethods ? k->nmethods : 1) * sizeof(CMethod));
+	CConst *nc = realloc(k->consts, (k->nconsts ? k->nconsts : 1) * sizeof(CConst));
+	if (np) k->props = np;
+	if (nm) k->methods = nm;
+	if (nc) k->consts = nc;
 	k->linking = 0;
 	k->linked = 1;
 }
@@ -1042,7 +1049,12 @@ enum {
 	OP_CALL, OP_CALLB, OP_CALLREF, OP_RET, OP_EXIT,
 	OP_NEW, OP_MCALL, OP_SCALL, OP_CCONST, OP_CLSNAME, OP_INSTOF, OP_CLONE, OP_TOPNAME,
 	OP_CLOSURE,                   /* func ncaps: closure from the captured values */
-	OP_CALLV                      /* argc: call the value below the arguments  */
+	OP_CALLV,                     /* argc: call the value below the arguments  */
+	OP_TRY,                       /* handler: install an exception handler     */
+	OP_ENDTRY,                    /* remove the innermost handler              */
+	OP_THROW,                     /* throw the value on the stack              */
+	OP_EXCMATCH,                  /* class depth: push (exception instanceof class) */
+	OP_JSR, OP_RETSUB             /* call / return from a finally block        */
 };
 
 /* class references in the bytecode: index, or these for self / static / parent */
@@ -1082,6 +1094,7 @@ static int progCode, progConst, progFuncs, progClasses;
  * in variables); the next REPL line is compiled behind them */
 static int keepCode, keepConst, keepFuncs, closuresMade;
 static int directCompile;          /* compiling a REPL line */
+static int compilingPrelude;       /* compiling the built-in classes */
 
 static int compiling;
 
@@ -1248,7 +1261,18 @@ typedef struct {
 	int isSwitch;
 } Loop;
 static Loop loops[LOOPS_MAX];
-static int  nloops;
+static int  nloops, loopBase;         /* loopBase: first loop of the current function */
+
+/* try blocks being compiled: return/break/continue leaving one must pop
+ * its handler and run its finally block first */
+typedef struct {
+	int active;                 /* a handler is installed (try or catch body) */
+	int inFinally;              /* compiling the finally block               */
+	int nloops;                 /* loops open when the try started           */
+	int jsr[JUMPS_MAX], njsr;   /* calls of the finally block to patch       */
+} TryCtx;
+static TryCtx trys[LOOPS_MAX];
+static int    ntrys, tryBase;
 
 static Loop *push_loop(int slots, int isSwitch) {
 	if (nloops >= LOOPS_MAX) fail("Loops nested too deeply");
@@ -1665,6 +1689,13 @@ static void primary(void) {
 		emit(OP_NULL);              /* expression value, never reached */
 		return;
 	}
+	if (!strcasecmp(name, "throw")) {     /* PHP 8: throw is an expression */
+		advance();
+		expr_assign();
+		emit(OP_THROW);
+		emit(OP_NULL);                     /* never reached */
+		return;
+	}
 	if (!strcasecmp(name, "print")) {
 		advance();
 		expr_assign();
@@ -2054,12 +2085,117 @@ static void compile_switch(void) {
 	emit(OP_POP);
 }
 
+/* leaving try blocks (return, or break/continue to loop index targetLoop):
+ * pop their handlers and run their finally blocks, innermost first */
+static void leave_trys(int targetLoop) {
+	for (int k = ntrys - 1; k >= tryBase && trys[k].nloops > targetLoop; k--) {
+		TryCtx *t = &trys[k];
+		if (t->active) emit(OP_ENDTRY);
+		if (!t->inFinally) {
+			if (t->njsr >= JUMPS_MAX) fail("Too many jumps");
+			emit(OP_JSR);
+			emit(0);
+			t->jsr[t->njsr++] = ncode - 1;
+		}
+	}
+}
+
+static void jsr_finally(TryCtx *t) {
+	if (t->njsr >= JUMPS_MAX) fail("Too many jumps");
+	emit(OP_JSR);
+	emit(0);
+	t->jsr[t->njsr++] = ncode - 1;
+}
+
+static void block(void) {
+	expect("{");
+	while (!is_op("}")) {
+		if (tok.t == TK_EOF) syntax_error();
+		statement();
+	}
+	advance();
+}
+
+/* try { } catch (A | B $e) { } ... finally { }
+ *
+ *        TRY H1; try body; ENDTRY; JSR F; JMP END
+ *   H1:  (exception on the stack) per catch: EXCMATCH..; JZ next;
+ *        store/pop; TRY H2; catch body; ENDTRY; JSR F; JMP END
+ *        no catch matched: JSR F; THROW
+ *   H2:  exception in a catch body: JSR F; THROW
+ *   F:   finally body; RETSUB
+ */
+static void compile_try(void) {
+	advance();                             /* try */
+	if (ntrys >= LOOPS_MAX) fail("try blocks nested too deeply");
+	TryCtx *t = &trys[ntrys++];
+	memset(t, 0, sizeof *t);
+	t->nloops = nloops;
+	int ends[JUMPS_MAX], nends = 0;
+	int h1 = emit_jump(OP_TRY);
+	t->active = 1;
+	block();
+	emit(OP_ENDTRY);
+	t->active = 0;
+	jsr_finally(t);
+	ends[nends++] = emit_jump(OP_JMP);
+	patch(h1);
+	int h2s[JUMPS_MAX], nh2 = 0, ncatch = 0;
+	while (is_kw("catch")) {
+		advance();
+		expect("(");
+		int first = 1;
+		do {
+			if (tok.t != TK_ID) fail("catch needs a class name");
+			emit2(OP_EXCMATCH, add_const(mk_cstr(tok.s)));
+			emit(first ? 0 : 1);               /* the exception is below the result so far */
+			if (!first) emit(OP_BOR);
+			first = 0;
+			advance();
+		} while (accept("|"));
+		int next = emit_jump(OP_JZ);
+		if (tok.t == TK_VAR) {
+			VarRef r = resolve_var(tok.s);
+			advance();
+			emit(OP_STORE); emit(r.scope); emit(r.slot); emit(0); emit(0);
+		}
+		emit(OP_POP);
+		expect(")");
+		if (nh2 >= JUMPS_MAX || nends >= JUMPS_MAX - 1) fail("Too many catch blocks");
+		h2s[nh2++] = emit_jump(OP_TRY);
+		t->active = 1;
+		block();
+		emit(OP_ENDTRY);
+		t->active = 0;
+		jsr_finally(t);
+		ends[nends++] = emit_jump(OP_JMP);
+		patch(next);
+		ncatch++;
+	}
+	int hasFinally = is_kw("finally");
+	if (!ncatch && !hasFinally) fail("try needs catch or finally");
+	/* no catch matched: run finally, throw on */
+	jsr_finally(t);
+	emit(OP_THROW);
+	for (int i = 0; i < nh2; i++) patch(h2s[i]);
+	if (nh2) { jsr_finally(t); emit(OP_THROW); }
+	/* the finally block as a subroutine */
+	int f = ncode;
+	t->inFinally = 1;
+	if (hasFinally) { advance(); block(); }
+	emit(OP_RETSUB);
+	for (int i = 0; i < t->njsr; i++) code[t->jsr[i]] = f;
+	for (int i = 0; i < nends; i++) patch(ends[i]);
+	ntrys--;
+}
+
 static void compile_break(int isCont) {
 	advance();
 	int n = 1;
 	if (tok.t == TK_INT) { n = tok.i; advance(); }
 	end_stmt();
-	if (n < 1 || n > nloops) fail("'%s' not in loop", isCont ? "continue" : "break");
+	if (n < 1 || n > nloops - loopBase) fail("'%s' not in loop", isCont ? "continue" : "break");
+	leave_trys(nloops - n);
 	Loop *target = &loops[nloops - n];
 	for (int k = nloops - 1; k > nloops - n; k--)
 		for (int s = 0; s < loops[k].slots; s++) emit(OP_POP);
@@ -2220,15 +2356,17 @@ static void compile_function(void) {
 	memset(&sc, 0, sizeof sc);
 	sc.isMethod = 0;
 	Scope *saved = scope;
-	int savedLoops = nloops;
+	int savedLoopBase = loopBase, savedTryBase = tryBase;
 	scope = &sc;
-	nloops = 0;
+	loopBase = nloops;
+	tryBase = ntrys;
 	Func *fn = &funcs[f];
 	fn->addr = ncode;                      /* allows recursion */
 	params_and_body(fn, -1, 1);
 	fn->nlocals = sc.n;
 	scope = saved;
-	nloops = savedLoops;
+	loopBase = savedLoopBase;
+	tryBase = savedTryBase;
 	patch(skip);
 }
 
@@ -2244,9 +2382,10 @@ static void compile_closure(int arrow) {
 	sc.isMethod = scope ? scope->isMethod : 0;
 	sc.arrow = arrow;
 	Scope *saved = scope;
-	int savedLoops = nloops;
+	int savedLoopBase = loopBase, savedTryBase = tryBase;
 	scope = &sc;
-	nloops = 0;
+	loopBase = nloops;
+	tryBase = ntrys;
 	Func *fn = &funcs[f];
 	fn->addr = ncode;
 	params_and_body(fn, -1, arrow ? 2 : 3);
@@ -2254,7 +2393,8 @@ static void compile_closure(int arrow) {
 	fn->ncaps = sc.ncap;
 	memcpy(fn->capSlot, sc.capSlot, sizeof sc.capSlot);
 	scope = saved;
-	nloops = savedLoops;
+	loopBase = savedLoopBase;
+	tryBase = savedTryBase;
 	patch(skip);
 	/* the captured values come from the surrounding scope */
 	for (int i = 0; i < sc.ncap; i++) {
@@ -2285,14 +2425,16 @@ static void compile_method(int c, int vis, int isStatic, int isAbstract) {
 	memset(&sc, 0, sizeof sc);
 	sc.isMethod = !isStatic;
 	Scope *saved = scope;
-	int savedLoops = nloops;
+	int savedLoopBase = loopBase, savedTryBase = tryBase;
 	scope = &sc;
-	nloops = 0;
+	loopBase = nloops;
+	tryBase = ntrys;
 	fn->addr = ncode;
 	params_and_body(fn, !strcasecmp(mname, "__construct") ? c : -1, !isAbstract);
 	fn->nlocals = sc.n;
 	scope = saved;
-	nloops = savedLoops;
+	loopBase = savedLoopBase;
+	tryBase = savedTryBase;
 	if (skip >= 0) patch(skip);
 	CMethod *m = &k->ownM[k->nownM++];
 	memset(m, 0, sizeof *m);
@@ -2426,10 +2568,19 @@ static void statement(void) {
 		if (is_kw("break")) { compile_break(0); return; }
 		if (is_kw("continue")) { compile_break(1); return; }
 		if (is_kw("function") && peek()->t == TK_ID) { compile_function(); return; }
+		if (is_kw("try")) { compile_try(); return; }
+		if (is_kw("throw")) {
+			advance();
+			expr();
+			end_stmt();
+			emit(OP_THROW);
+			return;
+		}
 		if (is_kw("return")) {
 			advance();
 			if (is_op(";") || tok.t == TK_EOF) emit(OP_NULL); else expr();
 			end_stmt();
+			leave_trys(-1);
 			if (scope) emit(OP_RET);
 			else { emit(OP_POP); emit(OP_END); }
 			return;
@@ -2569,10 +2720,11 @@ static int compile_source(const char *src, int file) {
 	lpos = 0;
 	lline = 0;
 	lexFile = file;
-	fixedLine = -2;
+	fixedLine = compilingPrelude ? 0 : -2;   /* prelude code has no line numbers */
 	havePeek = 0;
 	scope = NULL;
-	nloops = 0;
+	nloops = loopBase = 0;
+	ntrys = tryBase = 0;
 	includeDepth = 0;
 	if (file >= 0) { memset(included, 0, sizeof included); included[file] = 1; }
 	advance();
@@ -2605,6 +2757,15 @@ static int   nframes;
 static int   pc, curPc;
 static Value *refArg;               /* by-reference argument of builtins   */
 
+/* exception handlers installed by OP_TRY */
+#define HANDLERS_MAX 64
+typedef struct { int pc, nframes, sp, nscratch; } Handler;
+static Handler handlers[HANDLERS_MAX];
+static int     nhandlers;
+static Value   pendingExc;                 /* thrown, not caught yet       */
+static int     excPending;
+static int     throwableClass = -1;        /* class index of Throwable     */
+
 static void push(Value v) {
 	if (sp >= STACK_MAX) { release(v); fail("Stack overflow"); }
 	stack[sp++] = v;
@@ -2625,6 +2786,8 @@ static void scratch_push(void *p, Value v) {
 static void scratch_pop(int n) { nscratch -= n; }
 
 static void vm_reset(void) {
+	nhandlers = 0;
+	if (excPending) { release(pendingExc); excPending = 0; }
 	while (nscratch > 0) { nscratch--; free(scratch[nscratch].p); release(scratch[nscratch].v); }
 	while (sp > 0) release(stack[--sp]);
 	while (nframes > 0) { nframes--; release(frames[nframes].thisv); frames[nframes].thisv = mk_null(); }
@@ -2967,6 +3130,85 @@ static void invoke(int argc) {
 	enter_func(m->func, argc, thisv, m->decl, c, 0);
 }
 
+/* --- exceptions --- */
+
+static void throw_value(Value exc) __attribute__((noreturn));
+static void throw_value(Value exc) {
+	if (excPending) release(pendingExc);
+	pendingExc = exc;
+	excPending = 1;
+	errIsParse = 0;
+	longjmp(errjmp, 2);
+}
+
+static void set_prop(Value o, const char *name, Value v) {
+	int i = find_prop(o.u.o->cls, name);
+	if (i < 0) { release(v); return; }
+	release(o.u.o->props[i]);
+	o.u.o->props[i] = v;
+}
+
+/* line and file of the running code into a new Throwable */
+static void set_exc_origin(Value o) {
+	int line = curPc >= 0 && curPc < ncode ? codeLine[curPc] : 0;
+	set_prop(o, "line", mk_int(line > 0 ? (line & 1023) : 0));
+	int f = line > 0 ? line >> 10 : 0;
+	set_prop(o, "file", mk_cstr(f < nsrc ? fileNames[f] : ""));
+}
+
+/* runtime error (fail) as an Error object, like PHP 8 */
+static Value error_object(const char *msg) {
+	const char *cn = "Error";
+	if (!strncmp(msg, "Division by zero", 16) || !strncmp(msg, "Modulo by zero", 14)) cn = "DivisionByZeroError";
+	else if (!strncmp(msg, "Too few arguments", 17) || strstr(msg, "argument count")) cn = "ArgumentCountError";
+	else if (!strncmp(msg, "Unsupported operand", 19) || strstr(msg, "expects")) cn = "TypeError";
+	int c = find_class(cn);
+	if (c < 0) c = find_class("Error");
+	Value o = new_object(c);
+	set_prop(o, "message", mk_cstr(msg));
+	set_exc_origin(o);
+	return o;
+}
+
+/* after a longjmp: catch the pending exception (or a runtime error turned
+ * into an Error) with the innermost handler, if that handler belongs to
+ * frames >= minFrames. Returns 1 when the VM continues at the handler. */
+static int handle_throw(int minFrames) {
+	if (nhandlers == 0 || handlers[nhandlers - 1].nframes < minFrames) return 0;
+	if (!excPending) {
+		if (compiling || errIsParse || state != BASIC_RUNNING || throwableClass < 0) return 0;
+		pendingExc = error_object(errText);
+		excPending = 1;
+	}
+	Handler h = handlers[--nhandlers];
+	while (nframes > h.nframes) { Frame *fr = &frames[--nframes]; release(fr->thisv); fr->thisv = mk_null(); }
+	while (sp > h.sp) release(pop());
+	while (nscratch > h.nscratch) { nscratch--; free(scratch[nscratch].p); release(scratch[nscratch].v); }
+	refArg = NULL;
+	excPending = 0;
+	push(pendingExc);
+	pc = h.pc;
+	return 1;
+}
+
+/* run the frames above depth to completion (callbacks, __toString);
+ * exceptions are caught inside or passed on to the code around */
+static void run_nested(int depth, const char *what) {
+	jmp_buf outer;
+	memcpy(outer, errjmp, sizeof outer);
+	int jc = setjmp(errjmp);
+	if (jc && !handle_throw(depth + 1)) {
+		memcpy(errjmp, outer, sizeof outer);
+		longjmp(errjmp, jc);
+	}
+	while (nframes > depth) {
+		if (state != BASIC_RUNNING) { memcpy(errjmp, outer, sizeof outer); fail("input() is not allowed in %s", what); }
+		exec_one();
+	}
+	memcpy(errjmp, outer, sizeof outer);
+	if (state != BASIC_RUNNING) fail("The program ended inside %s", what);
+}
+
 /* call a callable with n arguments to completion right now (builtins such
  * as usort and array_map); returns the result */
 static Value call_now(Value callee, Value *args, int n) {
@@ -2975,11 +3217,7 @@ static Value call_now(Value callee, Value *args, int n) {
 	push(callee);
 	for (int i = 0; i < n; i++) { retain(args[i]); push(args[i]); }
 	invoke(n);
-	while (nframes > depth) {
-		if (state != BASIC_RUNNING) fail("input() is not allowed in a callback");
-		exec_one();
-	}
-	if (state != BASIC_RUNNING) fail("The program ended inside a callback");
+	run_nested(depth, "a callback");
 	pc = savedPc;
 	curPc = savedCur;
 	return pop();
@@ -2991,11 +3229,7 @@ static Value call_method_now(CMethod *m, Value thisv) {
 	retain(thisv);
 	enter_func(m->func, 0, thisv, m->decl, thisv.u.o->cls, 0);
 	frames[nframes - 1].retpc = -1;
-	while (nframes > depth) {
-		if (state != BASIC_RUNNING) fail("input() is not allowed in %s()", m->name);
-		exec_one();
-	}
-	if (state != BASIC_RUNNING) fail("The program ended inside %s()", m->name);
+	run_nested(depth, m->name);
 	pc = savedPc;
 	curPc = savedCur;
 	return pop();
@@ -3216,6 +3450,7 @@ static void exec_one(void) {
 	case OP_RET: {
 		r = pop();
 		Frame *fr = &frames[--nframes];
+		while (nhandlers > 0 && handlers[nhandlers - 1].nframes > nframes) nhandlers--;
 		while (sp > fr->base) release(pop());
 		if (fr->ctor) { release(r); r = fr->thisv; }
 		else release(fr->thisv);
@@ -3231,6 +3466,7 @@ static void exec_one(void) {
 		if (k->kind != K_CLASS) fail("Cannot instantiate %s %s", kind_name(k->kind), k->name);
 		if (k->isAbstract) fail("Cannot instantiate abstract class %s", k->name);
 		Value o = new_object(c);
+		if (throwableClass >= 0 && is_a(c, throwableClass)) set_exc_origin(o);
 		CMethod *m = find_method(c, "__construct");
 		if (m && m->func >= 0) {
 			if (!can_access(m->vis, m->decl)) {
@@ -3352,6 +3588,38 @@ static void exec_one(void) {
 	}
 	case OP_CALLV:
 		invoke(code[pc++]);
+		return;
+	case OP_TRY:
+		if (nhandlers >= HANDLERS_MAX) fail("try blocks nested too deeply");
+		handlers[nhandlers].pc = code[pc++];
+		handlers[nhandlers].nframes = nframes;
+		handlers[nhandlers].sp = sp;
+		handlers[nhandlers].nscratch = nscratch;
+		nhandlers++;
+		return;
+	case OP_ENDTRY:
+		if (nhandlers > 0) nhandlers--;
+		return;
+	case OP_THROW:
+		a = pop();
+		if (a.t != T_OBJ || throwableClass < 0 || !is_a(a.u.o->cls, throwableClass)) {
+			release(a);
+			fail("Can only throw objects that implement Throwable");
+		}
+		throw_value(a);
+	case OP_EXCMATCH: {
+		int c = find_class(consts[code[pc++]].u.s->s);
+		Value e = stack[sp - 1 - code[pc++]];
+		push(mk_bool(c >= 0 && e.t == T_OBJ && is_a(e.u.o->cls, c)));
+		return;
+	}
+	case OP_JSR:
+		push(mk_int(pc + 1));
+		pc = code[pc];
+		return;
+	case OP_RETSUB:
+		a = pop();
+		pc = a.u.i;
 		return;
 	case OP_CALLB: {
 		int bi = code[pc++], argc = code[pc++];
@@ -5364,6 +5632,64 @@ static int find_constant(const char *name, Value *out) {
 /* program lines                                                       */
 /* ------------------------------------------------------------------ */
 
+/* built-in classes, compiled in front of every program: the exception
+ * hierarchy of PHP 8 */
+static const char preludeSrc[] =
+	"interface Throwable {}\n"
+	"trait ThrowableMethods {\n"
+	"  protected $message = ''; protected $code = 0; protected $file = ''; protected $line = 0;\n"
+	"  protected $previous = null;\n"
+	"  public function __construct($message = '', $code = 0, $previous = null) {\n"
+	"    $this->message = $message; $this->code = $code; $this->previous = $previous; }\n"
+	"  public function getMessage() { return $this->message; }\n"
+	"  public function getCode() { return $this->code; }\n"
+	"  public function getPrevious() { return $this->previous; }\n"
+	"  public function getFile() { return $this->file; }\n"
+	"  public function getLine() { return $this->line; }\n"
+	"  public function getTrace() { return []; }\n"
+	"  public function getTraceAsString() { return '#0 {main}'; }\n"
+	"  public function __toString() { return get_class($this) . ': ' . $this->message; }\n"
+	"}\n"
+	"class Exception implements Throwable { use ThrowableMethods; }\n"
+	"class Error implements Throwable { use ThrowableMethods; }\n"
+	"class ErrorException extends Exception {}\n"
+	"class TypeError extends Error {}\n"
+	"class ValueError extends Error {}\n"
+	"class ArithmeticError extends Error {}\n"
+	"class DivisionByZeroError extends ArithmeticError {}\n"
+	"class ArgumentCountError extends TypeError {}\n"
+	"class JsonException extends Exception {}\n"
+	"class LogicException extends Exception {}\n"
+	"class BadFunctionCallException extends LogicException {}\n"
+	"class BadMethodCallException extends BadFunctionCallException {}\n"
+	"class DomainException extends LogicException {}\n"
+	"class InvalidArgumentException extends LogicException {}\n"
+	"class LengthException extends LogicException {}\n"
+	"class OutOfRangeException extends LogicException {}\n"
+	"class RuntimeException extends Exception {}\n"
+	"class OutOfBoundsException extends RuntimeException {}\n"
+	"class OverflowException extends RuntimeException {}\n"
+	"class RangeException extends RuntimeException {}\n"
+	"class UnderflowException extends RuntimeException {}\n"
+	"class UnexpectedValueException extends RuntimeException {}\n";
+
+static void compile_prelude(void) {
+	jmp_buf outer;
+	memcpy(outer, errjmp, sizeof outer);
+	int savedCompiling = compiling, savedErrLine = errLine;
+	if (!setjmp(errjmp)) {
+		compiling = 1;
+		compilingPrelude = 1;
+		errLine = -3;
+		compile_source(preludeSrc, -1);
+	}
+	compilingPrelude = 0;
+	compiling = savedCompiling;
+	errLine = savedErrLine;
+	memcpy(errjmp, outer, sizeof outer);
+	throwableClass = find_class("Throwable");
+}
+
 static void reset_code(void) {
 	for (int i = 0; i < nconst; i++) release(consts[i]);
 	nconst = 0;
@@ -5374,8 +5700,11 @@ static void reset_code(void) {
 	for (int i = 0; i < nclasses; i++) free_class(&classes[i]);
 	nclasses = 0;
 	clear_user_consts();
-	progCode = progConst = progFuncs = progClasses = 0;
-	keepCode = keepConst = keepFuncs = 0;
+	compile_prelude();
+	progCode = keepCode = ncode;
+	progConst = keepConst = nconst;
+	progFuncs = keepFuncs = nfuncs;
+	progClasses = nclasses;
 }
 
 /* back to the state right after the RUN-compiled program */
@@ -5918,6 +6247,7 @@ static char pendingCmd[LINE_MAX_LEN + 1];   /* editor command or direct code */
 
 static void start_vm(int addr) {
 	vm_reset();
+	nhandlers = 0;
 	frames[0].retpc = -1;
 	frames[0].base = 0;
 	frames[0].func = -1;
@@ -5936,7 +6266,7 @@ static void cmd_run(void) {
 	free_src_bufs();
 	compiling = 1;
 	errLine = -3;
-	compile_source(file_source(0), 0);
+	int start = compile_source(file_source(0), 0);
 	compiling = 0;
 	free_src_bufs();
 	progCode = ncode;
@@ -5946,7 +6276,7 @@ static void cmd_run(void) {
 	keepCode = ncode;
 	keepConst = nconst;
 	keepFuncs = nfuncs;
-	start_vm(0);
+	start_vm(start);
 }
 
 static void cmd_direct(const char *src) {
@@ -6007,6 +6337,24 @@ static void report_error(void) {
 	compiling = 0;
 	directCompile = 0;
 	int line = errIsParse ? errLine : (curPc >= 0 && curPc < ncode && state == BASIC_RUNNING ? codeLine[curPc] : 0);
+	if (excPending) {
+		/* uncaught exception: "Uncaught Exception: message" at the line of new */
+		Value e = pendingExc;
+		int mi = find_prop(e.u.o->cls, "message"), li = find_prop(e.u.o->cls, "line");
+		int ml = 0;
+		const char *m = mi >= 0 && e.u.o->props[mi].t == T_STR ? e.u.o->props[mi].u.s->s : "";
+		ml = (int)strlen(m);
+		snprintf(errText, sizeof errText, ml ? "Uncaught %s: %s" : "Uncaught %s%s", classes[e.u.o->cls].name, m);
+		if (li >= 0 && e.u.o->props[li].t == T_INT && e.u.o->props[li].u.i > 0) {
+			int f = 0;
+			int fi = find_prop(e.u.o->cls, "file");
+			if (fi >= 0 && e.u.o->props[fi].t == T_STR)
+				for (int k = 0; k < nsrc; k++) if (!strcmp(fileNames[k], e.u.o->props[fi].u.s->s)) f = k;
+			line = (f << 10) | e.u.o->props[li].u.i;
+		}
+		release(pendingExc);
+		excPending = 0;
+	}
 	const char *kind = errIsParse ? "Parse error" : "Error";
 	lastErrorLine = line > 0 ? (line & 1023) : -1;
 	lastErrorFile = line > 0 ? (line >> 10) : 0;
@@ -6085,7 +6433,7 @@ int basic_enter(const char *src, int *lineNum) {
 int basic_run_slice(int maxStatements) {
 	volatile int done = 0;
 	if (state != BASIC_RUNNING) return 0;
-	if (setjmp(errjmp)) { report_error(); pendingCmd[0] = 0; return 0; }
+	if (setjmp(errjmp) && !handle_throw(1)) { report_error(); pendingCmd[0] = 0; return 0; }
 	if (pendingCmd[0]) {
 		run_pending();
 		pendingCmd[0] = 0;

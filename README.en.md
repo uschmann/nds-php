@@ -105,9 +105,10 @@ Supported:
   your own with `const NAME = value;`
 * **Closures and arrow functions** (`function () use ($x) { … }`, `fn ($x) => …`) – see below
 * **Classes, interfaces and traits** – see below
+* **Exceptions** (`try`/`catch`/`finally`, `throw`) – see below
 
-Not included are, among others, references (`&`), static variables in functions, `match`,
-namespaces and exceptions (`try`/`catch`). As in PHP, keywords and function names are case-insensitive, variables are not.
+Not included are, among others, references (`&`), static variables in functions, `match`
+and namespaces. As in PHP, keywords and function names are case-insensitive, variables are not.
 Numbers with a decimal point are single-precision `float` on the DS.
 
 In the **REPL** the variables and functions of the last `RUN` are kept
@@ -161,6 +162,37 @@ var_dump($c instanceof Shape);              // bool(true)
 
 Classes are declared in the program (not in the REPL), but may live in any file and come before or
 after their use. There are no magic methods other than `__construct` and `__toString`.
+
+### Exceptions
+
+`try`, `catch` and `finally` work as in PHP 8, including several classes (`catch (A | B $e)`),
+catching without a variable (`catch (Exception)`) and `throw` as an expression
+(`$x ?? throw new Exception("empty")`).
+
+```php
+function divide($a, $b) {
+  if ($b == 0) throw new InvalidArgumentException("Division by zero", 1);
+  return $a / $b;
+}
+try {
+  echo divide(10, 0);
+} catch (InvalidArgumentException $e) {
+  echo "Error in line ", $e->getLine(), ": ", $e->getMessage();
+} finally {
+  echo "\ndone";
+}
+```
+
+Built in are `Throwable`, `Exception` and `Error` with the usual subclasses (`RuntimeException`,
+`LogicException`, `InvalidArgumentException`, `OutOfRangeException`, `UnexpectedValueException`,
+`TypeError`, `DivisionByZeroError`, `ArgumentCountError` …). Your own exceptions extend them.
+Methods: `getMessage()`, `getCode()`, `getPrevious()`, `getLine()`, `getFile()`, `__toString()`;
+the constructor takes `($message, $code, $previous)`.
+
+Inside `try`, runtime errors become `Error` objects that can be caught, e.g.
+`catch (DivisionByZeroError $e)` for `1 / 0`. Without a matching `catch` the program stops as usual,
+for exceptions with `Uncaught Exception: …` and the line where it was created. Exceptions also pass
+through callbacks (`usort`, `array_map` …).
 
 ### Closures and callbacks
 

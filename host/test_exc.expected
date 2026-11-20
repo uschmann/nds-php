@@ -1,0 +1,30 @@
+4
+InvalidArgumentException | negative: -4 | 42 | line 2
+finally 1
+caught: Division by zero arith
+error: Call to undefined function missing()
+App: boom data 7
+[f2 finally] from try
+i=0 (f0) (f1) i=2 (f2) (f3) 
+inner finally; outer caught inner; RuntimeException prev=inner
+cb: in callback
+sort: sort fail 3,1,2
+1,-1,3
+no value
+caught without var
+Exception: as string
+outer got TypeError
+xy
+deep ok
+fe1 fe2 
+bool(true)
+string(0) ""
+done
+Error: Uncaught LogicException: uncaught one
+Error: Division by zero
+mod Modulo by zero
+Error: Can only throw objects that implement Throwable
+Parse error: try needs catch or finally
+Error: Uncaught Exception: e
+still ok
+Error in line 2: Uncaught InvalidArgumentException: negative: -1

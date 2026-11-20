@@ -107,9 +107,10 @@ Unterstützt werden:
   eigene mit `const NAME = wert;`
 * **Closures und Arrow Functions** (`function () use ($x) { … }`, `fn ($x) => …`) – siehe unten
 * **Klassen, Interfaces und Traits** – siehe unten
+* **Exceptions** (`try`/`catch`/`finally`, `throw`) – siehe unten
 
-Nicht dabei sind u. a. Referenzen (`&`), statische Variablen in Funktionen, `match`,
-Namespaces und Ausnahmen (`try`/`catch`). Schlüsselwörter und Funktionsnamen sind wie in PHP unabhängig von Groß-/Kleinschreibung,
+Nicht dabei sind u. a. Referenzen (`&`), statische Variablen in Funktionen, `match`
+und Namespaces. Schlüsselwörter und Funktionsnamen sind wie in PHP unabhängig von Groß-/Kleinschreibung,
 Variablen nicht. Zahlen mit Komma sind auf dem DS `float` mit einfacher Genauigkeit.
 
 In der **REPL** bleiben die Variablen und Funktionen des letzten `RUN` erhalten
@@ -165,6 +166,37 @@ var_dump($c instanceof Shape);              // bool(true)
 Klassen werden im Programm deklariert (nicht in der REPL), dürfen aber in jeder Datei stehen und
 vor oder nach ihrer Verwendung kommen. Andere magische Methoden als `__construct` und
 `__toString` gibt es nicht.
+
+### Exceptions
+
+`try`, `catch` und `finally` funktionieren wie in PHP 8, auch mit mehreren Klassen
+(`catch (A | B $e)`), ohne Variable (`catch (Exception)`) und `throw` als Ausdruck
+(`$x ?? throw new Exception("leer")`).
+
+```php
+function teile($a, $b) {
+  if ($b == 0) throw new InvalidArgumentException("Durch null geteilt", 1);
+  return $a / $b;
+}
+try {
+  echo teile(10, 0);
+} catch (InvalidArgumentException $e) {
+  echo "Fehler in Zeile ", $e->getLine(), ": ", $e->getMessage();
+} finally {
+  echo "\nfertig";
+}
+```
+
+Eingebaut sind `Throwable`, `Exception` und `Error` mit den üblichen Unterklassen
+(`RuntimeException`, `LogicException`, `InvalidArgumentException`, `OutOfRangeException`,
+`UnexpectedValueException`, `TypeError`, `DivisionByZeroError`, `ArgumentCountError` …). Eigene
+Exceptions erben davon. Methoden: `getMessage()`, `getCode()`, `getPrevious()`, `getLine()`,
+`getFile()`, `__toString()`; der Konstruktor nimmt `($message, $code, $previous)`.
+
+Laufzeitfehler werden innerhalb von `try` zu `Error`-Objekten und lassen sich fangen, etwa
+`catch (DivisionByZeroError $e)` bei `1 / 0`. Ohne passendes `catch` bricht das Programm wie gewohnt
+ab, bei Exceptions mit `Uncaught Exception: …` und der Zeile, in der sie erzeugt wurde.
+Exceptions laufen auch durch Callbacks hindurch (`usort`, `array_map` …).
 
 ### Closures und Callbacks
 

@@ -79,5 +79,14 @@ test-date: basic
 	diff -u test_date.expected test.out && echo "date test passed"
 	rm -f test.out
 
+# exceptions: try/catch/finally, throw, built-in classes, runtime errors as Error
+test-exc: basic
+	(cat test_exc.txt; echo RUN; echo 'throw new LogicException("uncaught one");'; echo 'echo intdiv(1, 0);'; \
+	 echo 'try { echo 1 % 0; } catch (DivisionByZeroError $$e) { echo "mod ", $$e->getMessage(), PHP_EOL; }'; \
+	 echo 'throw 5;'; echo 'try { echo 1; }'; echo 'try { throw new Exception("e"); } catch (Nonexistent $$e) { }'; \
+	 echo 'echo "still ok", PHP_EOL;'; echo 'echo check(-1);') | ./basic > test.out
+	diff -u test_exc.expected test.out && echo "exception test passed"
+	rm -f test.out
+
 clean:
 	rm -f basic test.out

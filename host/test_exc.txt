@@ -1,0 +1,46 @@
+10 function check($n) {
+20   if ($n < 0) throw new InvalidArgumentException("negative: $n", 42);
+30   return sqrt($n);
+40 }
+50 try {
+60   echo check(16), PHP_EOL;
+70   echo check(-4), PHP_EOL;
+80   echo "not reached", PHP_EOL;
+90 } catch (InvalidArgumentException $e) {
+100   echo get_class($e), " | ", $e->getMessage(), " | ", $e->getCode(), " | line ", $e->getLine(), PHP_EOL;
+110 } finally {
+120   echo "finally 1", PHP_EOL;
+130 }
+140 try { echo 1 / 0; } catch (DivisionByZeroError $e) { echo "caught: ", $e->getMessage(), " ", $e instanceof ArithmeticError ? "arith" : "", PHP_EOL; }
+150 try { nope_fn_dyn(); } catch (Error $e) { echo "error: ", $e->getMessage(), PHP_EOL; }
+160 function nope_fn_dyn() { $f = "missing"; $f(); }
+170 class AppException extends RuntimeException {
+180   public function __construct($msg, private $extra = "x") { parent::__construct("App: $msg", 7); }
+190   public function extra() { return $this->extra; }
+200 }
+210 try { throw new AppException("boom", "data"); } catch (LogicException | RuntimeException $e) { echo $e->getMessage(), " ", $e->extra(), " ", $e->getCode(), PHP_EOL; }
+220 function f2() { try { return "from try"; } finally { echo "[f2 finally] "; } }
+230 echo f2(), PHP_EOL;
+240 for ($i = 0; $i < 5; $i++) { try { if ($i == 1) continue; if ($i == 3) break; echo "i=$i "; } finally { echo "(f$i) "; } }
+250 echo PHP_EOL;
+260 function nested() {
+270   try { try { throw new Exception("inner"); } finally { echo "inner finally; "; } }
+280   catch (Exception $e) { echo "outer caught ", $e->getMessage(), "; "; throw new RuntimeException("wrapped", 1, $e); }
+290 }
+300 try { nested(); } catch (Exception $e) { echo get_class($e), " prev=", $e->getPrevious()->getMessage(), PHP_EOL; }
+310 $tmp = [2, 1]; try { usort($tmp, fn($a, $b) => throw new Exception("in callback")); } catch (Exception $e) { echo "cb: ", $e->getMessage(), PHP_EOL; }
+320 $arr = [3, 1, 2];
+330 try { usort($arr, function($a, $b) { if ($a == 2) throw new Exception("sort fail"); return $a <=> $b; }); } catch (Exception $e) { echo "sort: ", $e->getMessage(), " ", implode(",", $arr), PHP_EOL; }
+340 $r = array_map(function($x) { try { if ($x == 2) throw new Exception("two"); return $x; } catch (Exception $e) { return -1; } }, [1, 2, 3]);
+350 echo implode(",", $r), PHP_EOL;
+360 $v = null; try { $v = $undefined ?? throw new UnexpectedValueException("no value"); } catch (Exception $e) { echo $e->getMessage(), PHP_EOL; }
+370 try { throw new Exception(); } catch (Exception) { echo "caught without var", PHP_EOL; }
+380 $e = new Exception("as string"); echo $e, PHP_EOL;
+390 try { try { throw new TypeError("t"); } catch (Exception $e) { echo "wrong"; } } catch (Error $e) { echo "outer got ", get_class($e), PHP_EOL; }
+400 try { throw new Exception("x"); } catch (Exception $e) { try { throw new Exception("y"); } catch (Exception $e2) { echo $e->getMessage(), $e2->getMessage(), PHP_EOL; } }
+410 function deep($n) { if ($n == 0) throw new OverflowException("deep"); return deep($n - 1); }
+420 try { deep(50); } catch (OverflowException $e) { echo "deep ok", PHP_EOL; }
+430 foreach ([1, 2] as $k) { try { foreach ([10, 20] as $m) { if ($m == 20) throw new Exception("in foreach"); } } catch (Exception $e) { echo "fe$k "; } }
+440 echo PHP_EOL;
+450 var_dump(new Exception("v") instanceof Throwable, (new ErrorException())->getMessage());
+460 echo "done", PHP_EOL;
