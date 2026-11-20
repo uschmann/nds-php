@@ -96,12 +96,12 @@ Unterstützt werden:
   `global`, `unset`, `isset`, `empty`, `exit`/`die`, Kommentare `//`, `#`, `/* */`
 * **Funktionen:** `strlen substr strpos str_repeat str_pad str_replace strcmp strcasecmp str_contains str_starts_with
   str_ends_with strtoupper strtolower ucfirst lcfirst trim ltrim rtrim strrev explode implode sprintf
-  printf number_format chr ord intval floatval strval boolval is_numeric is_int is_float is_string
+  printf vsprintf vprintf number_format chr ord intval floatval strval boolval is_numeric is_int is_float is_string
   is_bool is_array is_null gettype abs floor ceil round sqrt pow sin cos tan asin acos atan atan2
   exp log log10 pi fmod intdiv deg2rad rad2deg min max rand mt_rand srand count in_array
   array_search array_key_exists array_keys array_values array_sum array_reverse array_slice
   array_merge array_fill range array_push array_pop array_shift array_unshift sort rsort shuffle
-  print_r var_dump`, mit Callbacks: `array_map array_filter array_reduce array_walk usort uasort uksort
+  print_r var_dump time date mktime checkdate`, mit Callbacks: `array_map array_filter array_reduce array_walk usort uasort uksort
   call_user_func call_user_func_array is_callable function_exists`
 * **Konstanten:** `PHP_EOL`, `PHP_INT_MAX`, `M_PI`, `STR_PAD_LEFT/RIGHT/BOTH`, `JOY_UP` … `JOY_R`,
   eigene mit `const NAME = wert;`
@@ -225,6 +225,29 @@ while (!(joy() & JOY_B)) {
   pause(1);
 }
 ```
+
+### Datum und Uhrzeit
+
+`time()` liest die Uhr des DS (in den Systemeinstellungen gestellt, in melonDS die Uhrzeit des PCs).
+Die DS-Uhr kennt keine Zeitzone, daher zählen die Zeitstempel die Sekunden der Ortszeit seit 1970.
+
+```
+time()                    aktueller Zeitstempel
+date(f, $t)               Zeitstempel als Text, ohne $t die aktuelle Zeit; Formatzeichen wie in PHP:
+                          d j m n Y y H G h g i s a A D l N w z W o F M t L S U c r, \x = Zeichen x
+mktime(h, i, s, m, d, y)  Zeitstempel aus Datum und Uhrzeit (zu große Werte rollen über,
+                          fehlende Werte = jetzt)
+checkdate(m, d, y)        true, wenn es das Datum gibt
+```
+
+```php
+echo date("d.m.Y H:i"), PHP_EOL;                         // 21.11.2026 14:05
+$silvester = mktime(0, 0, 0, 12, 31, date("Y"));
+echo "Noch ", intdiv($silvester - time(), 86400), " Tage bis Silvester";
+```
+
+Tag- und Monatsnamen (`D l M F`) sind wie in PHP englisch. Zeitstempel sind 32-Bit-Zahlen und reichen
+bis Januar 2038.
 
 ## Grafik
 

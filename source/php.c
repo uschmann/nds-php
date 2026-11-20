@@ -30,6 +30,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <time.h>
 
 #define MAX_LINES    BASIC_MAX_LINES
 #define LINE_MAX_LEN BASIC_LINE_MAX
@@ -3574,9 +3575,18 @@ static Value do_sprintf(Value *a, int n) {
 		if (fmt[i] != '%') { buf_add(&b, &fmt[i], 1); continue; }
 		if (fmt[i + 1] == '%') { buf_add(&b, "%", 1); i++; continue; }
 		char spec[24];
-		int sl = 0;
+		int sl = 0, argNo = 0;
 		spec[sl++] = '%';
 		i++;
+		if (isdigit((unsigned char)fmt[i])) {          /* %2$s: argument number */
+			int j = i, v = 0;
+			while (isdigit((unsigned char)fmt[j])) v = v * 10 + (fmt[j++] - '0');
+			if (fmt[j] == '$') {
+				if (v < 1) { free(b.p); fail("sprintf(): argument number must be greater than zero"); }
+				argNo = v;
+				i = j + 1;
+			}
+		}
 		char pad = ' ';
 		while (fmt[i] == '-' || fmt[i] == '+' || fmt[i] == ' ' || fmt[i] == '0' || fmt[i] == '\'') {
 			if (fmt[i] == '\'') { pad = fmt[i + 1]; i += 2; continue; }
@@ -3591,8 +3601,9 @@ static Value do_sprintf(Value *a, int n) {
 		}
 		char type = fmt[i];
 		if (!type) break;
-		if (arg >= n) { free(b.p); fail("sprintf(): too few arguments"); }
-		Value v = a[arg++];
+		int ai = argNo ? argNo : arg++;
+		if (ai >= n) { free(b.p); fail("sprintf(): too few arguments"); }
+		Value v = a[ai];
 		char out[300];
 		switch (type) {
 		case 'd': case 'i': spec[sl++] = 'd'; spec[sl] = 0; snprintf(out, sizeof out, spec, to_int(v)); break;
@@ -3613,6 +3624,13 @@ static Value do_sprintf(Value *a, int n) {
 			spec[sl++] = type == 'F' ? 'f' : type;
 			spec[sl] = 0;
 			snprintf(out, sizeof out, spec, (double)to_float(v));
+			if (type == 'e' || type == 'E') {      /* PHP writes 1.5e+3, not 1.5e+03 */
+				char *e = strpbrk(out, "eE");
+				if (e && (e[1] == '+' || e[1] == '-')) {
+					char *z = e + 2;
+					while (z[0] == '0' && isdigit((unsigned char)z[1])) memmove(z, z + 1, strlen(z));
+				}
+			}
 			break;
 		case 's': {
 			int l;
@@ -3628,13 +3646,34 @@ static Value do_sprintf(Value *a, int n) {
 		}
 		default: out[0] = 0;
 		}
-		if (pad != ' ') for (char *p = out; *p == ' '; p++) *p = pad;
+		if (pad != ' ') {
+			if (strchr(spec, '-')) for (char *p = out + strlen(out); p > out && p[-1] == ' '; p--) p[-1] = pad;
+			else for (char *p = out; *p == ' '; p++) *p = pad;
+		}
 		buf_adds(&b, out);
 	}
 	return buf_value(&b);
 }
 
 BI(sprintf) { UNUSED; return do_sprintf(a, n); }
+
+/* vsprintf(format, [args]): arguments from an array */
+BI(vsprintf) {
+	UNUSED;
+	Arr *args = arr_arg(a, 1, "vsprintf");
+	if (args->n > 31) fail("vsprintf(): too many arguments");
+	Value v[32];
+	v[0] = a[0];
+	for (int i = 0; i < args->n; i++) v[i + 1] = args->e[i].val;
+	return do_sprintf(v, args->n + 1);
+}
+BI(vprintf) {
+	Value s = bi_vsprintf(a, n);
+	out_val(s);
+	int len = s.u.s->len;
+	release(s);
+	return mk_int(len);
+}
 BI(printf) {
 	Value s = do_sprintf(a, n);
 	out_val(s);
@@ -4410,6 +4449,155 @@ BI(usort) { UNUSED; return usort_impl(a[0], 0, 0, "usort"); }
 BI(uasort) { UNUSED; return usort_impl(a[0], 1, 0, "uasort"); }
 BI(uksort) { UNUSED; return usort_impl(a[0], 1, 1, "uksort"); }
 
+/* --- date and time ---
+ * The DS clock (RTC) has no time zone: it holds the local time, and
+ * timestamps here count seconds of that local time since 1970-01-01
+ * (as if the clock were UTC). The host build does the same with its
+ * local time. */
+
+static int now_ts(void) {
+	time_t t = time(NULL);
+#ifndef ARM9
+	struct tm lt;
+	localtime_r(&t, &lt);
+	t += lt.tm_gmtoff;
+#endif
+	return (int)t;
+}
+
+static long long days_from_civil(long long y, int m, int d) {
+	y -= m <= 2;
+	long long era = (y >= 0 ? y : y - 399) / 400;
+	long long yoe = y - era * 400;
+	long long doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+	long long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+	return era * 146097 + doe - 719468;
+}
+
+static void civil_from_days(long long z, int *y, int *m, int *d) {
+	z += 719468;
+	long long era = (z >= 0 ? z : z - 146096) / 146097;
+	long long doe = z - era * 146097;
+	long long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+	long long doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+	long long mp = (5 * doy + 2) / 153;
+	*d = (int)(doy - (153 * mp + 2) / 5 + 1);
+	*m = (int)(mp < 10 ? mp + 3 : mp - 9);
+	*y = (int)(yoe + era * 400 + (*m <= 2));
+}
+
+static int is_leap(int y) { return (y % 4 == 0 && y % 100 != 0) || y % 400 == 0; }
+static int month_days(int y, int m) {
+	static const char md[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+	return m == 2 && is_leap(y) ? 29 : md[m - 1];
+}
+
+typedef struct { int y, m, d, h, i, s, wday, yday; long long days; } DateParts;
+
+static void split_ts(long long ts, DateParts *p) {
+	long long days = ts >= 0 ? ts / 86400 : -((-ts + 86399) / 86400);
+	int secs = (int)(ts - days * 86400);
+	civil_from_days(days, &p->y, &p->m, &p->d);
+	p->h = secs / 3600;
+	p->i = secs / 60 % 60;
+	p->s = secs % 60;
+	p->wday = (int)(((days + 4) % 7 + 7) % 7);          /* 0 = Sunday */
+	p->yday = (int)(days - days_from_civil(p->y, 1, 1));
+	p->days = days;
+}
+
+BI(time) { UNUSED; return mk_int(now_ts()); }
+
+BI(date) {
+	static const char *const dayN[7] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
+	static const char *const monN[12] = { "January", "February", "March", "April", "May", "June", "July",
+	                                       "August", "September", "October", "November", "December" };
+	int fl;
+	const char *f = S(0, &fl);
+	long long ts = n > 1 && a[1].t != T_NULL ? to_int(a[1]) : now_ts();
+	DateParts p;
+	split_ts(ts, &p);
+	/* ISO-8601 week: the week of the Thursday */
+	int isoW = (p.wday + 6) % 7 + 1;
+	DateParts th;
+	split_ts((p.days + 4 - isoW) * 86400LL, &th);
+	int week = th.yday / 7 + 1;
+	Buf b = { 0 };
+	char t[40];
+	for (int k = 0; k < fl; k++) {
+		char c = f[k];
+		t[0] = 0;
+		switch (c) {
+		case 'd': sprintf(t, "%02d", p.d); break;
+		case 'D': snprintf(t, sizeof t, "%.3s", dayN[p.wday]); break;
+		case 'j': sprintf(t, "%d", p.d); break;
+		case 'l': strcpy(t, dayN[p.wday]); break;
+		case 'N': sprintf(t, "%d", isoW); break;
+		case 'S': strcpy(t, (p.d % 10 == 1 && p.d != 11) ? "st" : (p.d % 10 == 2 && p.d != 12) ? "nd" :
+		                    (p.d % 10 == 3 && p.d != 13) ? "rd" : "th"); break;
+		case 'w': sprintf(t, "%d", p.wday); break;
+		case 'z': sprintf(t, "%d", p.yday); break;
+		case 'W': sprintf(t, "%02d", week); break;
+		case 'o': sprintf(t, "%d", th.y); break;
+		case 'F': strcpy(t, monN[p.m - 1]); break;
+		case 'M': snprintf(t, sizeof t, "%.3s", monN[p.m - 1]); break;
+		case 'm': sprintf(t, "%02d", p.m); break;
+		case 'n': sprintf(t, "%d", p.m); break;
+		case 't': sprintf(t, "%d", month_days(p.y, p.m)); break;
+		case 'L': sprintf(t, "%d", is_leap(p.y)); break;
+		case 'Y': sprintf(t, "%d", p.y); break;
+		case 'y': sprintf(t, "%02d", (p.y % 100 + 100) % 100); break;
+		case 'a': strcpy(t, p.h < 12 ? "am" : "pm"); break;
+		case 'A': strcpy(t, p.h < 12 ? "AM" : "PM"); break;
+		case 'g': sprintf(t, "%d", (p.h + 11) % 12 + 1); break;
+		case 'G': sprintf(t, "%d", p.h); break;
+		case 'h': sprintf(t, "%02d", (p.h + 11) % 12 + 1); break;
+		case 'H': sprintf(t, "%02d", p.h); break;
+		case 'i': sprintf(t, "%02d", p.i); break;
+		case 's': sprintf(t, "%02d", p.s); break;
+		case 'u': strcpy(t, "000000"); break;
+		case 'v': strcpy(t, "000"); break;
+		case 'e': case 'T': strcpy(t, "UTC"); break;
+		case 'P': strcpy(t, "+00:00"); break;
+		case 'O': strcpy(t, "+0000"); break;
+		case 'Z': strcpy(t, "0"); break;
+		case 'I': strcpy(t, "0"); break;
+		case 'U': sprintf(t, "%lld", ts); break;
+		case 'c': sprintf(t, "%04d-%02d-%02dT%02d:%02d:%02d+00:00", p.y, p.m, p.d, p.h, p.i, p.s); break;
+		case 'r': snprintf(t, sizeof t, "%.3s, %02d %.3s %04d %02d:%02d:%02d +0000", dayN[p.wday], p.d,
+		                   monN[p.m - 1], p.y, p.h, p.i, p.s); break;
+		case '\\': if (k + 1 < fl) k++; buf_add(&b, &f[k], 1); continue;
+		default: buf_add(&b, &c, 1); continue;
+		}
+		buf_adds(&b, t);
+	}
+	return buf_value(&b);
+}
+
+/* mktime(hour, minute, second, month, day, year): missing values are taken
+ * from now, values out of range roll over like in PHP */
+BI(mktime) {
+	DateParts now;
+	split_ts(now_ts(), &now);
+	int v[6] = { now.h, now.i, now.s, now.m, now.d, now.y };
+	for (int i = 0; i < n && i < 6; i++) if (a[i].t != T_NULL) v[i] = to_int(a[i]);
+	long long y = v[5];
+	if (n > 5 && y >= 0 && y < 70) y += 2000;
+	else if (n > 5 && y >= 70 && y <= 100) y += 1900;
+	long long m0 = (long long)v[3] - 1;
+	y += m0 >= 0 ? m0 / 12 : -((11 - m0) / 12);
+	int m = (int)(((m0 % 12) + 12) % 12) + 1;
+	long long ts = (days_from_civil(y, m, 1) + v[4] - 1) * 86400LL + (long long)v[0] * 3600 + (long long)v[1] * 60 + v[2];
+	if (ts > 2147483647LL || ts < -2147483647LL - 1) return mk_bool(0);
+	return mk_int((int)ts);
+}
+
+BI(checkdate) {
+	UNUSED;
+	int m = to_int(a[0]), d = to_int(a[1]), y = to_int(a[2]);
+	return mk_bool(m >= 1 && m <= 12 && y >= 1 && y <= 32767 && d >= 1 && d <= month_days(y, m));
+}
+
 /* --- DS: text and input --- */
 
 BI(cls) { UNUSED; if (io->cls) io->cls(); col = 0; return mk_null(); }
@@ -5057,6 +5245,9 @@ static const Builtin builtins[] = {
 	{ "print_r", bi_print_r, 1, 2, 0 }, { "var_dump", bi_var_dump, 1, -1, 0 },
 	{ "sprintf", bi_sprintf, 1, -1, 0 }, { "printf", bi_printf, 1, -1, 0 },
 	{ "number_format", bi_number_format, 1, 2, 0 },
+	{ "vsprintf", bi_vsprintf, 2, 2, 0 }, { "vprintf", bi_vprintf, 2, 2, 0 },
+	{ "time", bi_time, 0, 0, 0 }, { "date", bi_date, 1, 2, 0 }, { "gmdate", bi_date, 1, 2, 0 },
+	{ "mktime", bi_mktime, 0, 6, 0 }, { "gmmktime", bi_mktime, 0, 6, 0 }, { "checkdate", bi_checkdate, 3, 3, 0 },
 	{ "strlen", bi_strlen, 1, 1, 0 }, { "strtoupper", bi_strtoupper, 1, 1, 0 },
 	{ "strtolower", bi_strtolower, 1, 1, 0 }, { "ucfirst", bi_ucfirst, 1, 1, 0 },
 	{ "lcfirst", bi_lcfirst, 1, 1, 0 }, { "strrev", bi_strrev, 1, 1, 0 },

@@ -71,5 +71,13 @@ test-closure: basic
 	diff -u test_closure.expected test.out && echo "closure test passed"
 	rm -f test.out
 
+# date()/time()/mktime() with fixed timestamps, sprintf and str_pad
+test-date: basic
+	(cat test_date.txt; echo RUN; printf '%s\n' "echo sprintf('%0\$$s', 1);" "echo sprintf('%3\$$s', 1);" \
+	 'var_dump(mktime(0, 0, 0, 1, 1, 2040));') \
+	 | ./basic > test.out
+	diff -u test_date.expected test.out && echo "date test passed"
+	rm -f test.out
+
 clean:
 	rm -f basic test.out

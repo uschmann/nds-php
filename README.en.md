@@ -94,12 +94,12 @@ Supported:
   `global`, `unset`, `isset`, `empty`, `exit`/`die`, comments `//`, `#`, `/* */`
 * **Functions:** `strlen substr strpos str_repeat str_pad str_replace strcmp strcasecmp str_contains str_starts_with
   str_ends_with strtoupper strtolower ucfirst lcfirst trim ltrim rtrim strrev explode implode sprintf
-  printf number_format chr ord intval floatval strval boolval is_numeric is_int is_float is_string
+  printf vsprintf vprintf number_format chr ord intval floatval strval boolval is_numeric is_int is_float is_string
   is_bool is_array is_null gettype abs floor ceil round sqrt pow sin cos tan asin acos atan atan2
   exp log log10 pi fmod intdiv deg2rad rad2deg min max rand mt_rand srand count in_array
   array_search array_key_exists array_keys array_values array_sum array_reverse array_slice
   array_merge array_fill range array_push array_pop array_shift array_unshift sort rsort shuffle
-  print_r var_dump`, with callbacks: `array_map array_filter array_reduce array_walk usort uasort uksort
+  print_r var_dump time date mktime checkdate`, with callbacks: `array_map array_filter array_reduce array_walk usort uasort uksort
   call_user_func call_user_func_array is_callable function_exists`
 * **Constants:** `PHP_EOL`, `PHP_INT_MAX`, `M_PI`, `STR_PAD_LEFT/RIGHT/BOTH`, `JOY_UP` … `JOY_R`,
   your own with `const NAME = value;`
@@ -219,6 +219,28 @@ while (!(joy() & JOY_B)) {
   pause(1);
 }
 ```
+
+### Date and time
+
+`time()` reads the DS clock (set in the system settings; melonDS uses the PC's time). The DS clock
+has no time zone, so timestamps count the seconds of local time since 1970.
+
+```
+time()                    current timestamp
+date(f, $t)               timestamp as text, without $t the current time; format characters as in PHP:
+                          d j m n Y y H G h g i s a A D l N w z W o F M t L S U c r, \x = character x
+mktime(h, i, s, m, d, y)  timestamp from date and time (values out of range roll over,
+                          missing values = now)
+checkdate(m, d, y)        true when the date exists
+```
+
+```php
+echo date("Y-m-d H:i"), PHP_EOL;                         // 2026-11-21 14:05
+$newYearsEve = mktime(0, 0, 0, 12, 31, date("Y"));
+echo intdiv($newYearsEve - time(), 86400), " days until New Year's Eve";
+```
+
+Timestamps are 32-bit numbers and last until January 2038.
 
 ## Graphics
 
