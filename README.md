@@ -80,7 +80,9 @@ vorn, danach eigene Namen vor eingebauten. In Strings und Kommentaren gibt es ke
 
 **REPL-Konsole:** Sie zeigt die Ausgabe der Programme und hat einen Prompt `>`, an dem man einzelne
 PHP-Anweisungen sofort ausführt (`echo 2 + 3;`, `$x = strlen("abc");`) oder Befehle wie `RUN`,
-`SAVE "NAME"` und `LOAD "NAME"` eingibt. ↑↓ holen frühere Eingaben zurück. `START` bzw. `RUN`
+`SAVE "NAME"` und `LOAD "NAME"` eingibt. Ein Ausdruck ohne `echo` zeigt sein Ergebnis gleich an
+(`1 + 2` → `= 3`, `strtoupper("ds")` → `= "DS"`, Arrays kurz als `[1, 2]`); Zuweisungen, `null` und
+Funktionen, die selbst ausgeben (`printf`, `print_r` …), bleiben still. ↑↓ holen frühere Eingaben zurück. `START` bzw. `RUN`
 starten das Programm aus dem Editor heraus und schalten dafür auf die Konsole.
 
 **Sprache:** Die Oberfläche (Titelbildschirm, Hinweise, Hilfeseite) richtet sich nach der Systemsprache des DS.

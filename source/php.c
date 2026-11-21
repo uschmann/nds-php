@@ -1065,7 +1065,8 @@ enum {
 	OP_THROW,                     /* throw the value on the stack              */
 	OP_EXCMATCH,                  /* class depth: push (exception instanceof class) */
 	OP_JSR, OP_RETSUB,            /* call / return from a finally block        */
-	OP_ARGNAMES                   /* names: argument names for the next call   */
+	OP_ARGNAMES,                  /* names: argument names for the next call   */
+	OP_SHOWVAL                    /* REPL: print "= value" unless null, pop     */
 };
 
 /* class references in the bytecode: index, or these for self / static / parent */
@@ -1108,6 +1109,8 @@ static int keepCode, keepConst, keepFuncs, closuresMade;
 static int directCompile;          /* compiling a REPL line */
 static int compilingPrelude;       /* compiling the built-in classes */
 static int compilingEnum;          /* compile_class() reads an enum   */
+static int assignEnd = -1;         /* code end after an assignment / ++ */
+static int outputCallEnd = -1;     /* code end after printf(), print_r()... */
 
 static int compiling;
 
@@ -1433,12 +1436,14 @@ static void lvalue_rest(VarRef r) {
 		if (op == 0 && is_op("&")) fail("References are not supported");
 		expr_assign();
 		emit(OP_STORE); emit(r.scope); emit(r.slot); emit(n); emit(op);
+		assignEnd = ncode;
 		return;
 	}
 	if (is_op("++") || is_op("--")) {
 		int dec = is_op("--");
 		advance();
 		emit(OP_INCDEC); emit(r.scope); emit(r.slot); emit(n); emit(dec | 2);
+		assignEnd = ncode;
 		return;
 	}
 	if (app) fail("Cannot use [] for reading");
@@ -1654,6 +1659,7 @@ static void compile_call(const char *name) {
 		builtin_arity(b, &mn, &mx);
 		if (argc < mn || (mx >= 0 && argc > mx)) fail("Wrong argument count for %s()", name);
 		emit(OP_CALLREF); emit(b); emit(r.scope); emit(r.slot); emit(n); emit(argc);
+		outputCallEnd = ncode;                /* sort(), usort()...: no "= true" in the REPL */
 		return;
 	}
 	call_args(&argc);
@@ -1663,6 +1669,8 @@ static void compile_call(const char *name) {
 		builtin_arity(b, &mn, &mx);
 		if (argc < mn || (mx >= 0 && argc > mx)) fail("Wrong argument count for %s()", name);
 		emit(OP_CALLB); emit(b); emit(argc);
+		static const char *const printing[] = { "printf", "vprintf", "print_r", "var_dump", NULL };
+		for (int i = 0; printing[i]; i++) if (!strcasecmp(name, printing[i])) outputCallEnd = ncode;
 	} else {
 		int f = func_index(name, 1);
 		emit_argnames();
@@ -2843,8 +2851,12 @@ static void statement(void) {
 		    is_kw("try"))
 			fail("'%s' is not supported", tok.s);
 	}
+	/* REPL: an expression on its own shows its value ("= 42"), except
+	 * assignments and calls that print themselves */
+	int show = directCompile && !scope && !is_kw("print");
 	expr();
-	emit(OP_POP);
+	if (show && assignEnd != ncode && outputCallEnd != ncode) emit(OP_SHOWVAL);
+	else emit(OP_POP);
 	end_stmt();
 }
 
@@ -3949,6 +3961,19 @@ static void exec_one(void) {
 		int c = find_class(consts[code[pc++]].u.s->s);
 		Value e = stack[sp - 1 - code[pc++]];
 		push(mk_bool(c >= 0 && e.t == T_OBJ && is_a(e.u.o->cls, c)));
+		return;
+	}
+	case OP_SHOWVAL: {
+		char t[200];
+		a = pop();
+		if (a.t != T_NULL) {
+			dbg_fmt(a, t, sizeof t, 0);
+			if (col) out_ch('\n');
+			outs("= ");
+			outs(t);
+			out_ch('\n');
+		}
+		release(a);
 		return;
 	}
 	case OP_ARGNAMES:
