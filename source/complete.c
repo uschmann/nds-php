@@ -163,6 +163,9 @@ static const Snippet snippets[] = {
 	{ "match()", "ma", "match () {", 7 },
 	{ "function()", "fn", "function () {", 10 },
 	{ "try/catch", "tc", "try {  } catch (Exception $e) {  }", 6 },
+	{ "class{}", "cl", "class  {", 6 },
+	{ "__construct()", "co", "public function __construct(public $) {}", 36 },
+	{ "public function", "pf", "public function () {", 16 },
 	{ NULL, NULL, NULL, 0 }
 };
 

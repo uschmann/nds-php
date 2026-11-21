@@ -104,8 +104,10 @@ const char *basic_program_name(void);    /* name of the last LOAD/SAVE or "" */
 int         basic_modified(void);        /* program changed since LOAD/SAVE */
 /* sorted names of saved programs: "NAME" = project folder, "NAME.PHP" = old
  * single file; -1 = no storage */
+#define BASIC_NAME_MAX  24      /* program and file names (without .php) */
+#define BASIC_NAME_BUF  32      /* buffer for a name + ".php" + 0        */
 #define BASIC_MAX_FILES 64
-int         basic_list_files(char names[][16], int max);
+int         basic_list_files(char names[][BASIC_NAME_BUF], int max);
 
 #define BASIC_LINE_MAX  255     /* characters per program line          */
 #define BASIC_MAX_LINES 1000

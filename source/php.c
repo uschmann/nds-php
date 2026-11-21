@@ -62,7 +62,7 @@ static BasicState state = BASIC_IDLE;
 #define MAX_SRC     BASIC_PROJECT_FILES
 static Line  fileLines[MAX_SRC][MAX_LINES];
 static int   fileCount[MAX_SRC];
-static char  fileNames[MAX_SRC][16];
+static char  fileNames[MAX_SRC][BASIC_NAME_BUF];
 static int   nsrc = 1, curFile;
 static int   filesVersion, editRequest = -1;
 static int   modified;                  /* program changed since LOAD/SAVE */
@@ -72,7 +72,7 @@ static int   modified;                  /* program changed since LOAD/SAVE */
 static char  lastError[128];
 static int   lastErrorLine = -1, lastErrorFile = 0;
 static char  storageDir[128];
-static char  lastFile[16];
+static char  lastFile[BASIC_NAME_BUF];
 static int   col;                       /* output column                 */
 static unsigned rndState = 12345;
 static int   waitFrames, waitSound, waitTone;
@@ -2806,11 +2806,11 @@ static void statement(void) {
 			advance();
 			int paren = accept("(");
 			if (tok.t != TK_STR) fail("require needs a file name in quotes");
-			char name[16];
+			char name[BASIC_NAME_BUF];
 			int n = 0;
-			for (int i = 0; i < tok.len && n < 12; i++) name[n++] = (char)tolower((unsigned char)tok.s[i]);
+			for (int i = 0; i < tok.len && n < BASIC_NAME_MAX + 4; i++) name[n++] = (char)tolower((unsigned char)tok.s[i]);
 			name[n] = 0;
-			if (!strchr(name, '.') && n <= 8) strcat(name, ".php");
+			if (!strchr(name, '.') && n <= BASIC_NAME_MAX) strcat(name, ".php");
 			advance();
 			if (paren) expect(")");
 			end_stmt();
@@ -5677,20 +5677,22 @@ BI(sound_busy) {
 /* Files live in the program's folder (storage/NAME/), for unsaved programs
  * directly in the storage folder. Names: letters, digits, _ - . (no paths);
  * .php files can be read but not written, the editor owns them. */
+#define DATA_PATH 256                      /* buffer for a data file path */
+
 static int data_path(Value v, char *path, int write, const char *fn) {
 	int len;
 	const char *name = sval(v, &len);
-	if (len < 1 || len > 32 || name[0] == '.') fail("%s(): bad file name \"%.32s\"", fn, name);
+	if (len < 1 || len > 64 || name[0] == '.') fail("%s(): bad file name \"%.40s\"", fn, name);
 	for (int i = 0; i < len; i++)
 		if (!isalnum((unsigned char)name[i]) && name[i] != '_' && name[i] != '-' && name[i] != '.')
-			fail("%s(): bad file name \"%.32s\" (no folders)", fn, name);
+			fail("%s(): bad file name \"%.40s\" (no folders)", fn, name);
 	if (write && len > 4 && !strcasecmp(name + len - 4, ".php")) fail("%s(): .php files belong to the editor", fn);
 	if (!storageDir[0]) return 0;
 	if (lastFile[0] && !strchr(lastFile, '.')) {
-		snprintf(path, 200, "%.127s/%.15s", storageDir, lastFile);
+		snprintf(path, DATA_PATH, "%.127s/%.31s", storageDir, lastFile);
 		if (write) mkdir(path, 0777);
-		snprintf(path, 200, "%.127s/%.15s/%.32s", storageDir, lastFile, name);
-	} else snprintf(path, 200, "%.127s/%.32s", storageDir, name);
+		snprintf(path, DATA_PATH, "%.127s/%.31s/%.64s", storageDir, lastFile, name);
+	} else snprintf(path, DATA_PATH, "%.127s/%.64s", storageDir, name);
 	return 1;
 }
 
@@ -5710,14 +5712,14 @@ static int read_all(const char *path, Buf *b) {
 
 BI(file_get_contents) {
 	UNUSED;
-	char path[200];
+	char path[DATA_PATH];
 	Buf b = { 0 };
 	if (!data_path(a[0], path, 0, "file_get_contents") || !read_all(path, &b)) return mk_bool(0);
 	return buf_value(&b);
 }
 
 BI(file_put_contents) {
-	char path[200];
+	char path[DATA_PATH];
 	int flags = n > 2 ? to_int(a[2]) : 0;
 	if (!data_path(a[0], path, 1, "file_put_contents")) return mk_bool(0);
 	FILE *fp = fopen(path, (flags & 8) ? "ab" : "wb");
@@ -5740,7 +5742,7 @@ BI(file_put_contents) {
 }
 
 BI(file) {
-	char path[200];
+	char path[DATA_PATH];
 	int flags = n > 1 ? to_int(a[1]) : 0;
 	Buf b = { 0 };
 	if (!data_path(a[0], path, 0, "file") || !read_all(path, &b)) return mk_bool(0);
@@ -5759,14 +5761,14 @@ BI(file) {
 
 BI(file_exists) {
 	UNUSED;
-	char path[200];
+	char path[DATA_PATH];
 	struct stat st;
 	return mk_bool(data_path(a[0], path, 0, "file_exists") && stat(path, &st) == 0);
 }
 
 BI(unlink) {
 	UNUSED;
-	char path[200];
+	char path[DATA_PATH];
 	return mk_bool(data_path(a[0], path, 1, "unlink") && remove(path) == 0);
 }
 
@@ -6337,8 +6339,8 @@ static int parse_target(const char *arg, char *name, int optional) {
 		char c = (char)toupper((unsigned char)*arg);
 		if (c == '.') { if (dot || !base) fail("Bad name"); dot = 1; }
 		else if (!isalnum((unsigned char)c) && c != '_' && c != '-') fail("Bad name");
-		else if (!dot && ++base > 8) fail("Bad name (max. 8 characters)");
-		if (n >= 12) fail("Bad name");
+		else if (!dot && ++base > BASIC_NAME_MAX) fail("Bad name (max. %d characters)", BASIC_NAME_MAX);
+		if (n >= BASIC_NAME_MAX + 4) fail("Bad name");
 		name[n++] = c;
 	}
 	name[n] = 0;
@@ -6346,14 +6348,14 @@ static int parse_target(const char *arg, char *name, int optional) {
 	return dot;
 }
 
-/* file name inside a project: lower case, max. 8 characters + ".php" */
+/* file name inside a project: lower case, max. BASIC_NAME_MAX characters + ".php" */
 static void parse_php_name(const char *arg, char *name) {
 	while (*arg == ' ' || *arg == '"' || *arg == '\'') arg++;
 	int n = 0, base = 0;
 	for (; *arg && *arg != '"' && *arg != '\'' && *arg != ' ' && *arg != '.'; arg++) {
 		char c = (char)tolower((unsigned char)*arg);
 		if (!isalnum((unsigned char)c) && c != '_' && c != '-') fail("Bad file name");
-		if (++base > 8) fail("Bad file name (max. 8 characters)");
+		if (++base > BASIC_NAME_MAX) fail("Bad file name (max. %d characters)", BASIC_NAME_MAX);
 		name[n++] = c;
 	}
 	if (*arg == '.' && strncasecmp(arg, ".php", 4)) fail("Files must end in .php");
@@ -6362,7 +6364,7 @@ static void parse_php_name(const char *arg, char *name) {
 }
 
 static void file_path(char *path, const char *name) {
-	snprintf(path, 160, "%.127s/%.15s", storageDir, name);
+	snprintf(path, 160, "%.127s/%.31s", storageDir, name);
 }
 
 static int is_dir(const char *path) {
@@ -6401,7 +6403,7 @@ static int write_file(const char *path, int f, int withAssets) {
 }
 
 static void cmd_save(const char *arg) {
-	char name[16], path[160], fpath[200], msg[48];
+	char name[BASIC_NAME_BUF], path[160], fpath[200], msg[80];
 	int single = parse_target(arg, name, 1);
 	file_path(path, name);
 	if (single) {
@@ -6416,23 +6418,23 @@ static void cmd_save(const char *arg) {
 	mkdir(path, 0777);
 	if (!is_dir(path)) fail("Cannot create the folder %s", name);
 	for (int f = 0; f < nsrc; f++) {
-		snprintf(fpath, sizeof fpath, "%.150s/%.15s", path, fileNames[f]);
+		snprintf(fpath, sizeof fpath, "%.150s/%.31s", path, fileNames[f]);
 		if (!write_file(fpath, f, f == 0)) fail("Disk error while saving %s", fileNames[f]);
 	}
 	/* remove .php files that are no longer part of the program */
 	DIR *d = opendir(path);
 	if (d) {
 		struct dirent *e;
-		char stale[MAX_SRC * 2][16];
+		char stale[MAX_SRC * 2][BASIC_NAME_BUF];
 		int ns = 0;
 		while ((e = readdir(d)) && ns < MAX_SRC * 2) {
 			size_t l = strlen(e->d_name);
-			if (l < 5 || l > 12 || strcasecmp(e->d_name + l - 4, ".php")) continue;
+			if (l < 5 || l > BASIC_NAME_MAX + 4 || strcasecmp(e->d_name + l - 4, ".php")) continue;
 			if (find_src(e->d_name) < 0) strcpy(stale[ns++], e->d_name);
 		}
 		closedir(d);
 		for (int i = 0; i < ns; i++) {
-			snprintf(fpath, sizeof fpath, "%.150s/%.15s", path, stale[i]);
+			snprintf(fpath, sizeof fpath, "%.150s/%.31s", path, stale[i]);
 			remove(fpath);
 		}
 	}
@@ -6507,29 +6509,29 @@ static void read_file(FILE *fp, int f) {
 static int cmp_names(const void *x, const void *y) { return strcmp((const char *)x, (const char *)y); }
 
 static void cmd_load(const char *arg) {
-	char name[16], path[160], fpath[200], msg[48];
+	char name[BASIC_NAME_BUF], path[160], fpath[200], msg[80];
 	int single = parse_target(arg, name, 0);
 	file_path(path, name);
 	if (!single && is_dir(path)) {
-		static char names[MAX_SRC][16];
+		static char names[MAX_SRC][BASIC_NAME_BUF];
 		int n = 0;
 		DIR *d = opendir(path);
 		if (!d) fail("Cannot read %s", name);
 		struct dirent *e;
 		while ((e = readdir(d))) {
 			size_t l = strlen(e->d_name);
-			if (l < 5 || l > 12 || strcasecmp(e->d_name + l - 4, ".php") || !strcasecmp(e->d_name, "main.php")) continue;
+			if (l < 5 || l > BASIC_NAME_MAX + 4 || strcasecmp(e->d_name + l - 4, ".php") || !strcasecmp(e->d_name, "main.php")) continue;
 			if (n >= MAX_SRC - 1) break;
 			for (size_t k = 0; k <= l; k++) names[n][k] = (char)tolower((unsigned char)e->d_name[k]);
 			n++;
 		}
 		closedir(d);
-		qsort(names, n, 16, cmp_names);
+		qsort(names, n, BASIC_NAME_BUF, cmp_names);
 		clear_program();
 		for (int i = 0; i < n; i++) strcpy(fileNames[1 + i], names[i]);
 		nsrc = 1 + n;
 		for (int f = 0; f < nsrc; f++) {
-			snprintf(fpath, sizeof fpath, "%.150s/%.15s", path, fileNames[f]);
+			snprintf(fpath, sizeof fpath, "%.150s/%.31s", path, fileNames[f]);
 			FILE *fp = fopen(fpath, "r");
 			if (!fp) continue;           /* a missing main.php stays empty */
 			read_file(fp, f);
@@ -6543,7 +6545,7 @@ static void cmd_load(const char *arg) {
 		message(msg);
 		return;
 	}
-	char shown[16];
+	char shown[BASIC_NAME_BUF];
 	strcpy(shown, name);
 	if (!single) {
 		strcat(name, ".PHP");
@@ -6564,7 +6566,7 @@ static void cmd_load(const char *arg) {
 
 /* saved programs: project folders ("NAME") and old single files
  * ("NAME.PHP", hidden when a folder of that name exists), sorted */
-int basic_list_files(char names[][16], int max) {
+int basic_list_files(char names[][BASIC_NAME_BUF], int max) {
 	int count = 0;
 	if (!storageDir[0]) return -1;
 	DIR *d = opendir(storageDir);
@@ -6573,11 +6575,11 @@ int basic_list_files(char names[][16], int max) {
 	char path[200];
 	while ((e = readdir(d)) && count < max) {
 		size_t l = strlen(e->d_name);
-		if (e->d_name[0] == '.' || l > 12) continue;
-		snprintf(path, sizeof path, "%.127s/%.15s", storageDir, e->d_name);
+		if (e->d_name[0] == '.' || l > BASIC_NAME_MAX + 4) continue;
+		snprintf(path, sizeof path, "%.127s/%.31s", storageDir, e->d_name);
 		if (is_dir(path)) {
-			if (l > 8) continue;
-			snprintf(path, sizeof path, "%.127s/%.15s/main.php", storageDir, e->d_name);
+			if (l > BASIC_NAME_MAX) continue;
+			snprintf(path, sizeof path, "%.127s/%.31s/main.php", storageDir, e->d_name);
 			FILE *fp = fopen(path, "r");
 			if (!fp) continue;
 			fclose(fp);
@@ -6593,18 +6595,18 @@ int basic_list_files(char names[][16], int max) {
 		for (int j = 0; j < count; j++)
 			if (j != i && !strchr(names[j], '.') && (int)strlen(names[j]) == dot - names[i] &&
 			    !strncmp(names[j], names[i], dot - names[i])) {
-				memmove(names[i], names[count - 1], 16);
+				memmove(names[i], names[count - 1], BASIC_NAME_BUF);
 				count--;
 				i--;
 				break;
 			}
 	}
-	qsort(names, count, 16, cmp_names);
+	qsort(names, count, BASIC_NAME_BUF, cmp_names);
 	return count;
 }
 
 static void cmd_dir(void) {
-	static char names[BASIC_MAX_FILES][16];
+	static char names[BASIC_MAX_FILES][BASIC_NAME_BUF];
 	if (!storageDir[0]) fail("No storage (SD card) available");
 	int count = basic_list_files(names, BASIC_MAX_FILES);
 	if (count < 0) fail("Cannot read the directory");
@@ -6623,10 +6625,10 @@ static void cmd_dir(void) {
 				}
 				closedir(d);
 			}
-			snprintf(line, sizeof line, "%-12.12s %2d FILE%s", names[i], nf, nf == 1 ? "" : "S");
+			snprintf(line, sizeof line, "%-20.24s %2d FILE%s", names[i], nf, nf == 1 ? "" : "S");
 		} else {
 			long size = stat(path, &st) == 0 ? (long)st.st_size : 0;
-			snprintf(line, sizeof line, "%-12.12s %6ld", names[i], size);
+			snprintf(line, sizeof line, "%-20.24s %6ld", names[i], size);
 		}
 		outs(line);
 		out_ch('\n');
@@ -6638,12 +6640,12 @@ static void cmd_dir(void) {
 }
 
 static void cmd_delete(const char *arg) {
-	char name[16], path[160], fpath[200], msg[40];
+	char name[BASIC_NAME_BUF], path[160], fpath[200], msg[80];
 	int single = parse_target(arg, name, 0);
 	file_path(path, name);
 	if (!single && is_dir(path)) {
 		DIR *d = opendir(path);
-		char names[MAX_SRC * 2][16];
+		char names[MAX_SRC * 2][BASIC_NAME_BUF];
 		int n = 0;
 		if (d) {
 			struct dirent *e;
@@ -6652,7 +6654,7 @@ static void cmd_delete(const char *arg) {
 			closedir(d);
 		}
 		for (int i = 0; i < n; i++) {
-			snprintf(fpath, sizeof fpath, "%.150s/%.15s", path, names[i]);
+			snprintf(fpath, sizeof fpath, "%.150s/%.31s", path, names[i]);
 			remove(fpath);
 		}
 		if (rmdir(path) != 0) fail("Cannot delete the folder %s", name);
@@ -6683,7 +6685,7 @@ static void cmd_list(const char *arg) {
 /* --- files of the program --- */
 
 static void cmd_edit(const char *arg) {
-	char name[16];
+	char name[BASIC_NAME_BUF];
 	parse_php_name(arg, name);
 	int f = find_src(name);
 	if (f < 0) {
@@ -6701,8 +6703,8 @@ static void cmd_edit(const char *arg) {
 
 static void cmd_files(void) {
 	for (int f = 0; f < nsrc; f++) {
-		char b[40];
-		snprintf(b, sizeof b, "%c %-12.12s %4d LINE%s", f == curFile ? '*' : ' ', fileNames[f],
+		char b[48];
+		snprintf(b, sizeof b, "%c %-16.28s %4d LINE%s", f == curFile ? '*' : ' ', fileNames[f],
 		         fileCount[f], fileCount[f] == 1 ? "" : "S");
 		outs(b);
 		out_ch('\n');
@@ -6710,7 +6712,7 @@ static void cmd_files(void) {
 }
 
 static void cmd_rmfile(const char *arg) {
-	char name[16], msg[40];
+	char name[BASIC_NAME_BUF], msg[80];
 	parse_php_name(arg, name);
 	int f = find_src(name);
 	if (f < 0) fail("File %s not found", name);
@@ -6733,7 +6735,7 @@ static void cmd_rmfile(const char *arg) {
 
 /* RENAME "new" renames the file open in the editor, RENAME "old" "new" another one */
 static void cmd_rename(const char *arg) {
-	char a[16], b[16], msg[48];
+	char a[BASIC_NAME_BUF], b[BASIC_NAME_BUF], msg[80];
 	parse_php_name(arg, a);
 	const char *second = arg;
 	while (*second == ' ' || *second == '"' || *second == '\'') second++;

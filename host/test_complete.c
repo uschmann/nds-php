@@ -48,6 +48,9 @@ int main(void) {
 	show("1");
 	show("s");
 	show("count");
+	show("cl");
+	show("co");
+	show("pf");
 	complete_used("strtoupper");
 	show("st");
 	return 0;

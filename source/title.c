@@ -191,7 +191,7 @@ static void render_scene(float angle, float t) {
 #define PER_PAGE  12
 #define BTN_Y     170
 
-static char files[BASIC_MAX_FILES][16];
+static char files[BASIC_MAX_FILES][BASIC_NAME_BUF];
 static int nfiles, page, pressed = -1;
 static bool hasProgram;
 
@@ -207,11 +207,13 @@ static void item_rect(int i, int *x, int *y) {
 
 static void draw_item(int i) {
 	int x, y;
-	char name[16];
+	char name[BASIC_NAME_BUF];
 	item_rect(i, &x, &y);
 	strcpy(name, files[i]);
 	char *dot = strchr(name, '.');
 	if (dot) *dot = 0;
+	int room = (ITEM_W - 8) / 8;               /* long names are cut to the button */
+	if ((int)strlen(name) > room) { name[room - 1] = '~'; name[room] = 0; }
 	draw_button(x, y, ITEM_W, ITEM_H, name, COL_CARD, i == pressed);
 }
 

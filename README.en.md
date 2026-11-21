@@ -74,7 +74,8 @@ the arrow on the right shows more. What is suggested depends on the text before 
 
 Snippets insert whole constructs and put the cursor in the right place: `fe` →
 `foreach ($ as $v) {`, `fo` → `for`, `wh` → `while`, `if`, `sw` → `switch`, `ma` → `match`, `fn` →
-`function () {`, `tc` → `try { } catch (Exception $e) { }`. Recently taken suggestions come first,
+`function () {`, `tc` → `try { } catch (Exception $e) { }`, `cl` → `class  {`, `co` →
+`public function __construct(public $) {}` (property promotion), `pf` → `public function () {`. Recently taken suggestions come first,
 then your own names before built-in ones. There are no suggestions inside strings and comments.
 
 **REPL console:** it shows the program output and has a `>` prompt where you run single PHP
@@ -449,7 +450,7 @@ RENAME "new"       rename the open file (or RENAME "old" "new")
 RMFILE "util"      remove a file from the program
 ```
 
-File names: up to 8 characters from a–z, 0–9, `_`, `-`, the extension `.php` is added; at most
+File names: up to 24 characters from a–z, 0–9, `_`, `-`, the extension `.php` is added; at most
 16 files per program. `main.php` cannot be renamed or removed.
 
 ```php
@@ -529,7 +530,7 @@ DIR               lists all programs
 DELETE "GAME"     deletes the program and its folder
 ```
 
-Program names: up to 8 characters from A–Z, 0–9, `_`, `-`. Every file starts with `<?php` and holds
+Program names: up to 24 characters from A–Z, 0–9, `_`, `-`. Every file starts with `<?php` and holds
 the lines exactly as in the editor (including indentation and blank lines), so it can be edited on
 the PC. `SAVE` removes files from the folder that no longer belong to the program. Used sprites and
 sounds are appended to `main.php` as PHP comments: `#SPR n` + 64 characters (`.` = transparent,
@@ -546,7 +547,7 @@ In the melonDS emulator: enable SD emulation under *Config → Emu settings → 
 Programs can read and write files of their own, such as high scores or save games. They live in
 the program's folder (`/nds-php/GAME/`). A program that has not been saved yet writes straight
 to `/nds-php/`. File names consist of letters, digits, `_`, `-` and `.` (no folders, max.
-32 characters); `.php` files belong to the editor and are read-only.
+64 characters); `.php` files belong to the editor and are read-only.
 
 ```
 file_put_contents(f, $s)    write a file, returns the bytes written or false

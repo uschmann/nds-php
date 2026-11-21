@@ -747,7 +747,7 @@ static void run_program(void) {
 /* ------------------------------------------------------------------ */
 
 static bool browserOpen, browserLoading, browserDeleting;
-static char browserFile[16];
+static char browserFile[BASIC_NAME_BUF];
 static Screen brScr;
 
 static void open_browser(void) {
@@ -1326,7 +1326,7 @@ static void update_status_panel(void) {
 /* title screen with program list; afterwards set up the 2D screens again
  * and load the program that was tapped (if any) */
 static void enter_title(void) {
-	char file[16];
+	char file[BASIC_NAME_BUF];
 	screensSwapped = false;
 	bool chosen = title_screen(file, basic_line_count() > 0);
 	video_init();

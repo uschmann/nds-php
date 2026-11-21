@@ -4,6 +4,7 @@
 #include <string.h>
 #include "kbd.h"
 #include "draw.h"
+#include "basic.h"
 
 
 typedef enum { KT_CHAR, KT_SHIFT, KT_SPECIAL } KeyType;
@@ -117,7 +118,8 @@ static void layout(void) {
 /* ---------------- file tabs ---------------- */
 
 #define TAB_MAX 16
-static char tabNames[TAB_MAX][13] = { "main.php" };
+static char tabNames[TAB_MAX][BASIC_NAME_BUF] = { "main.php" };
+#define TAB_LABEL 12              /* longer names are cut in the tab */
 static int  tabCount = 1, tabCur, tabX[TAB_MAX + 1], tabW[TAB_MAX + 1], tabIdx[TAB_MAX + 1], tabShown;
 
 #define MENU_TILE_X 232            /* "three dots" tile in the header */
@@ -142,6 +144,7 @@ static void draw_tabs(void) {
 	for (int i = 0; i < tabCount; i++) {
 		int l = 0;
 		while (tabNames[i][l] && tabNames[i][l] != '.') l++;
+		if (l > TAB_LABEL) l = TAB_LABEL;
 		w[i] = l * 8 + 10;
 	}
 	/* first visible tab: keep the current one on screen */
@@ -155,9 +158,10 @@ static void draw_tabs(void) {
 	int x = x0;
 	tabShown = 0;
 	for (int i = first; i < tabCount && x + w[i] <= maxX; i++) {
-		char label[13];
+		char label[TAB_LABEL + 1];
 		int l = 0;
-		while (tabNames[i][l] && tabNames[i][l] != '.') { label[l] = tabNames[i][l]; l++; }
+		while (l < TAB_LABEL && tabNames[i][l] && tabNames[i][l] != '.') { label[l] = tabNames[i][l]; l++; }
+		if (l == TAB_LABEL && tabNames[i][l] && tabNames[i][l] != '.') label[l - 1] = '~';
 		label[l] = 0;
 		bool cur = i == tabCur;
 		text(x + 5, 7, label, cur ? COL_ACCENT : COL_MUTED, 1);
@@ -173,9 +177,9 @@ static void draw_tabs(void) {
 void kbd_set_tabs(const char *const *names, int count, int current) {
 	if (count > TAB_MAX) count = TAB_MAX;
 	bool changed = count != tabCount || current != tabCur;
-	for (int i = 0; i < count && !changed; i++) changed = strncmp(tabNames[i], names[i], 12) != 0;
+	for (int i = 0; i < count && !changed; i++) changed = strncmp(tabNames[i], names[i], BASIC_NAME_BUF - 1) != 0;
 	if (!changed) return;
-	for (int i = 0; i < count; i++) { strncpy(tabNames[i], names[i], 12); tabNames[i][12] = 0; }
+	for (int i = 0; i < count; i++) { strncpy(tabNames[i], names[i], BASIC_NAME_BUF - 1); tabNames[i][BASIC_NAME_BUF - 1] = 0; }
 	tabCount = count;
 	tabCur = current;
 	draw_tabs();

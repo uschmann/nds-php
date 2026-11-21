@@ -17,4 +17,7 @@
 [1] word=1:
 [s] word=1:
 [count] word=5: count  | count($a) -> "count(" back 0
+[cl] word=2: class{} class clone class_exists cls  | class  { -> "class  {" back 2
+[co] word=2: __construct() const continue color cos count  | public function __construct(public  -> "public function __construct(public $) {}" back 4
+[pf] word=2: public function  | public function () { -> "public function () {" back 4
 [st] word=2: strtoupper strangeHelper static stamp str_contains str_ends_with str_pad str_repeat str_replace str_starts_with  | strtoupper(1) -> "strtoupper(" back 0

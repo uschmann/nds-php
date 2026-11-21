@@ -28,11 +28,11 @@
 #define PREVIEW_LINES 22
 #define PREVIEW_LEN   64
 
-typedef struct { char name[16]; char info[16]; } Entry;
+typedef struct { char name[BASIC_NAME_BUF]; char info[16]; } Entry;
 
 static Entry entries[BASIC_MAX_FILES];
 static int   nentries, sel, top, level;          /* level 0 = programs, 1 = files */
-static char  project[16];                         /* program opened in level 1    */
+static char  project[BASIC_NAME_BUF];                         /* program opened in level 1    */
 static bool  projectIsFolder;
 static char  message[33];
 static int   confirm = -1;                        /* button waiting for a 2nd tap */
@@ -43,7 +43,7 @@ static char  preview[PREVIEW_LINES][PREVIEW_LEN + 1];
 static int   npreview;
 static bool  previewCode;
 
-static char  target[16], targetFile[16];
+static char  target[BASIC_NAME_BUF], targetFile[BASIC_NAME_BUF];
 
 /* ---------------- buttons ---------------- */
 
@@ -114,8 +114,11 @@ static void draw_row(int r) {
 		draw_fill(4, y, 248, ROW_H - 1, COL_TINT);
 		draw_fill(4, y, 3, ROW_H - 1, COL_ACCENT);
 	}
-	draw_text(12, y + 4, entries[i].name, s ? COL_ACCENT : COL_TEXT, 1);
 	int il = (int)strlen(entries[i].info);
+	char nm[BASIC_NAME_BUF];                  /* long names: cut before the info */
+	int room = (248 - il * 8 - 8 - 12) / 8;
+	snprintf(nm, sizeof nm, "%.*s", room < 1 ? 1 : room, entries[i].name);
+	draw_text(12, y + 4, nm, s ? COL_ACCENT : COL_TEXT, 1);
 	draw_text(248 - il * 8, y + 4, entries[i].info, COL_MUTED, 1);
 }
 
@@ -154,8 +157,8 @@ static void set_message(const char *m) {
 /* ---------------- reading the card ---------------- */
 
 static void path_of(char *out, int size, const char *a, const char *b) {
-	if (b) snprintf(out, size, "%.100s/%.15s/%.15s", basic_storage_dir(), a, b);
-	else snprintf(out, size, "%.100s/%.15s", basic_storage_dir(), a);
+	if (b) snprintf(out, size, "%.100s/%.31s/%.31s", basic_storage_dir(), a, b);
+	else snprintf(out, size, "%.100s/%.31s", basic_storage_dir(), a);
 }
 
 static int count_lines(const char *path) {
@@ -191,7 +194,7 @@ static int project_files(const char *proj, Entry *out, int max) {
 	struct dirent *e;
 	while ((e = readdir(d)) && n < max) {
 		size_t l = strlen(e->d_name);
-		if (l < 5 || l > 12 || strcasecmp(e->d_name + l - 4, ".php")) continue;
+		if (l < 5 || l > BASIC_NAME_MAX + 4 || strcasecmp(e->d_name + l - 4, ".php")) continue;
 		for (size_t k = 0; k <= l; k++) out[n].name[k] = (char)tolower((unsigned char)e->d_name[k]);
 		snprintf(fpath, sizeof fpath, "%s/%s", path, e->d_name);
 		int lines = count_lines(fpath);
@@ -251,8 +254,8 @@ static void update_preview(void) {
 			Entry files[BASIC_PROJECT_FILES];
 			int n = project_files(name, files, BASIC_PROJECT_FILES);
 			for (int i = 0; i < n; i++) {
-				char line[40];
-				snprintf(line, sizeof line, "// %-12.12s %.15s", files[i].name, files[i].info);
+				char line[48];
+				snprintf(line, sizeof line, "// %-14.24s %.15s", files[i].name, files[i].info);
 				add_preview_text(line);
 			}
 			add_preview_text("");
@@ -270,7 +273,7 @@ static void update_preview(void) {
 static void read_list(void) {
 	nentries = 0;
 	if (level == 0) {
-		static char names[BASIC_MAX_FILES][16];
+		static char names[BASIC_MAX_FILES][BASIC_NAME_BUF];
 		int n = basic_list_files(names, BASIC_MAX_FILES);
 		char path[200];
 		for (int i = 0; i < n; i++) {
@@ -333,7 +336,7 @@ void browser_open(void) {
 	read_list();
 	const char *cur = basic_program_name();
 	for (int i = 0; i < nentries; i++) {
-		char base[16];
+		char base[BASIC_NAME_BUF];
 		strcpy(base, entries[i].name);
 		char *dot = strchr(base, '.');
 		if (dot) *dot = 0;
@@ -374,7 +377,7 @@ static void enter_project(void) {
 }
 
 static void leave_project(void) {
-	char was[16];
+	char was[BASIC_NAME_BUF];
 	strcpy(was, project);
 	level = 0;
 	confirm = -1;

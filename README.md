@@ -75,7 +75,8 @@ rechts blättert weiter. Was vorgeschlagen wird, hängt vom Text vor dem Cursor 
 
 Snippets setzen ganze Konstrukte ein und stellen den Cursor an die richtige Stelle: `fe` →
 `foreach ($ as $v) {`, `fo` → `for`, `wh` → `while`, `if`, `sw` → `switch`, `ma` → `match`, `fn` →
-`function () {`, `tc` → `try { } catch (Exception $e) { }`. Zuletzt übernommene Vorschläge stehen
+`function () {`, `tc` → `try { } catch (Exception $e) { }`, `cl` → `class  {`, `co` →
+`public function __construct(public $) {}` (Property Promotion), `pf` → `public function () {`. Zuletzt übernommene Vorschläge stehen
 vorn, danach eigene Namen vor eingebauten. In Strings und Kommentaren gibt es keine Vorschläge.
 
 **REPL-Konsole:** Sie zeigt die Ausgabe der Programme und hat einen Prompt `>`, an dem man einzelne
@@ -460,7 +461,7 @@ RENAME "neu"       geöffnete Datei umbenennen (oder RENAME "alt" "neu")
 RMFILE "util"      Datei aus dem Programm entfernen
 ```
 
-Dateinamen: bis 8 Zeichen aus a–z, 0–9, `_`, `-`, die Endung `.php` wird ergänzt; höchstens
+Dateinamen: bis 24 Zeichen aus a–z, 0–9, `_`, `-`, die Endung `.php` wird ergänzt; höchstens
 16 Dateien pro Programm. `main.php` kann nicht umbenannt oder entfernt werden.
 
 ```php
@@ -541,7 +542,7 @@ DIR               listet alle Programme
 DELETE "SPIEL"    löscht das Programm samt Ordner
 ```
 
-Programmnamen: bis 8 Zeichen aus A–Z, 0–9, `_`, `-`. Jede Datei beginnt mit `<?php` und enthält die
+Programmnamen: bis 24 Zeichen aus A–Z, 0–9, `_`, `-`. Jede Datei beginnt mit `<?php` und enthält die
 Zeilen genau wie im Editor (samt Einrückung und Leerzeilen), kann also am PC bearbeitet werden.
 Dateien, die nicht mehr zum Programm gehören, entfernt `SAVE` aus dem Ordner. Benutzte Sprites und
 Sounds stehen am Ende von `main.php` als PHP-Kommentare: `#SPR n` + 64 Zeichen (`.` = transparent,
@@ -558,7 +559,7 @@ Im Emulator melonDS: unter *Config → Emu settings → DLDI* die SD-Emulation a
 Programme können eigene Dateien lesen und schreiben, etwa Highscores oder Spielstände. Sie liegen
 im Ordner des Programms (`/nds-php/SPIEL/`). Ein noch nicht gespeichertes Programm schreibt direkt
 nach `/nds-php/`. Dateinamen bestehen aus Buchstaben, Ziffern, `_`, `-` und `.` (keine Ordner,
-max. 32 Zeichen); `.php`-Dateien gehören dem Editor und können nur gelesen werden.
+max. 64 Zeichen); `.php`-Dateien gehören dem Editor und können nur gelesen werden.
 
 ```
 file_put_contents(f, $s)    Datei schreiben, gibt die Bytes zurück oder false
