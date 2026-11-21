@@ -39,12 +39,14 @@ The top screen is either the **code editor** or the **REPL console**; `SCRN` swi
 | Switch between editor and REPL console | `SCRN` | – |
 | Help page with all commands (↑↓ scroll, ←→ page) | – | SELECT |
 | Move the cursor | `←` `→` `↑` `↓` | d-pad |
-| Line start / end, page up / down | – | L/R + ←→, L/R + ↑↓ |
+| Line start / end, page up / down | – | R + ←→, R + ↑↓ (in the console also L) |
 | New line (keeps the indentation) | `RET` | A |
 | Delete left of the cursor (at the line start: join lines) | `DEL` | B |
-| Delete the whole line | `CLR` | X (in the editor) |
+| Delete / cut the whole line | `CLR` | X (in the editor) |
 | Duplicate the line (copy below, cursor on the copy) | – | Y (in the editor) |
-| Capitals and second symbols (tap twice = lock) | `SHFT` | hold L / R |
+| Capitals and second symbols (tap twice = lock) | `SHFT` | hold R (in the console also L) |
+| Code on the touch screen (select, rename …) | – | hold / tap L (in the editor) |
+| Paste / undo / redo | – | SELECT + X / Y / A (in the editor) |
 | Menu `⋮` (right of the tab bar): open (file browser), save, debugger, sprite editor, sound editor, exit (to the title screen) | – | – |
 | Sprite editor | – | X (in the REPL console) |
 | Sound editor | – | Y (in the REPL console) |
@@ -57,6 +59,46 @@ in the left margin are only there for orientation (and error messages); you neve
 lines wrap. After a line ending in `{`, `RET` indents two more characters, and a `}` on an otherwise
 empty line indents back. When a program stops with an error, the cursor sits on the error line when
 you switch back.
+
+**Code on the touch screen (refactoring):** In the editor, **hold L** to swap the screens: the code
+moves to the touch screen, the keyboard to the top. **Tap L** to keep them swapped until you tap L
+again (or *Done*). With the stylus:
+
+| Gesture | Effect |
+|---|---|
+| tap a word | select the word (`$x` including the `$`) |
+| tap next to it | just place the cursor |
+| drag up / down | select whole lines (scrolls at the top / bottom edge) |
+| drag sideways in a line | select text in the line |
+| swipe over the line numbers | scroll |
+
+Below the code is a toolbar that depends on the selection:
+
+* **word:** *Rename*, *Def* (jump to the definition), *Uses* (all usages as a list; tap one to
+  jump there), *Copy*, *Cut*
+* **lines:** *Cut*, *Copy*, *Dup*, `«` `»` outdent / indent, `↑` `↓` move the block
+* **text in a line:** *Cut*, *Copy*
+* **nothing:** *Paste*, *Undo*, *Redo*
+
+**Rename** shows every place in all files on the top screen with the new name in green; matches in
+strings and comments are grey and stay as they are. Type the new name, `RET` renames, `SCRN`
+cancels. What belongs together follows from the place:
+
+| Word | renamed |
+|---|---|
+| `$x` in a function | only in that function (closures and `fn` inside belong to it) |
+| `$x` outside functions | in the global code of all files, also in `"…$x…"` |
+| function / constant | declaration and all calls |
+| class, interface, trait, enum | declaration, `new`, `extends`, types, `X::`, `catch` … |
+| method, property, constant, enum case | declaration and every `->name` / `::name` |
+
+Methods and properties are recognized by name only: if two classes use the name, both are renamed.
+Built-in functions and classes cannot be renamed.
+
+Selected lines stay selected after swapping back: **X** cuts them, **Y** duplicates them. Without a
+selection, X cuts the current line (into the clipboard). **SELECT+X** pastes, **SELECT+Y** undoes,
+**SELECT+A** redoes (the last 20 changes; a rename across several files counts as one). In the
+editor only **R** is shift now.
 
 **Autocompletion:** While typing in the editor and at the REPL, tappable suggestions appear above
 the keyboard, with the signature of the first one below (taken from the help page for built-in

@@ -7,6 +7,7 @@
  */
 #include <nds.h>
 #include <ctype.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -27,6 +28,7 @@
 #include "dbg.h"
 #include "complete.h"
 #include "syntax.h"
+#include "refactor.h"
 
 #define COLS 32
 #define ROWS 24
@@ -56,6 +58,7 @@ typedef struct {
 } Screen;
 
 static Screen term, edit;
+static int frameCount;
 static u16 *map0, *map1;
 static u16 *gfx;          /* 8 bit bitmap layer behind the text (256x256) */
 static int gfxBg;
@@ -182,10 +185,13 @@ static int io_joy(void) {
 /* swap_screens(): program output (main engine) on the bottom LCD while the
  * program runs; during input() the keyboard comes back to the bottom */
 static bool screensSwapped, touchDown;
+/* L held (or tapped): the code goes to the touch screen, where the stylus
+ * selects words and lines; a toolbar below the code acts on them */
+static bool edSwap;
 static int  touchX, touchY;
 
 static void apply_lcd(void) {
-	if (screensSwapped && basic_state() == BASIC_RUNNING) lcdMainOnBottom();
+	if ((screensSwapped && basic_state() == BASIC_RUNNING) || edSwap) lcdMainOnBottom();
 	else lcdMainOnTop();
 }
 
@@ -301,7 +307,10 @@ static void set_status(const char *msg, u8 colr) {
  * screen row (line and wrapped row of that line) */
 static int curLine, curCol, wantCol, topLine, topSub;
 
-static void ed_reset(void) { curLine = curCol = wantCol = topLine = topSub = 0; }
+enum { SEL_NONE, SEL_WORD, SEL_LINES, SEL_CHARS };
+static int selKind, selLine, selA, selB;   /* word/chars: line, [A,B); lines: A..B */
+
+static void ed_reset(void) { curLine = curCol = wantCol = topLine = topSub = 0; selKind = SEL_NONE; }
 
 /* every file of the program keeps its own cursor position */
 typedef struct { int line, col, want, top, sub; } EdPos;
@@ -319,6 +328,7 @@ static void sync_file(void) {
 		return;
 	}
 	if (f == edFile) return;
+	selKind = SEL_NONE;
 	edPos[edFile] = (EdPos){ curLine, curCol, wantCol, topLine, topSub };
 	curLine = edPos[f].line; curCol = edPos[f].col; wantCol = edPos[f].want;
 	topLine = edPos[f].top; topSub = edPos[f].sub;
@@ -375,6 +385,10 @@ static void storage_init(void) {
 #define CODE_TOP   1
 #define CODE_ROWS  22
 #define STATUS_ROW 23
+#define TOOL_ROWS  3                 /* toolbar below the code while swapped */
+
+static int code_rows(void) { return edSwap ? CODE_ROWS - TOOL_ROWS : CODE_ROWS; }
+static int rowLine[ROWS], rowSub[ROWS];   /* what render_edit drew in each row */
 
 static int gutter_w(void) {
 	int n = basic_line_count();
@@ -404,7 +418,7 @@ static void ed_scroll(void) {
 		int r = -topSub;
 		for (int i = topLine; i < curLine; i++) r += line_rows(i);
 		r += csub + 1;
-		if (r <= CODE_ROWS) break;
+		if (r <= code_rows()) break;
 		if (++topSub >= line_rows(topLine)) { topLine++; topSub = 0; }
 	}
 }
@@ -458,7 +472,7 @@ static void ed_home(void) {
 	ed_set_want();
 }
 static void ed_end(void) { curCol = line_len(curLine); ed_set_want(); }
-static void ed_page(int dir) { for (int i = 0; i < CODE_ROWS - 1; i++) { if (dir < 0) ed_up(); else ed_down(); } }
+static void ed_page(int dir) { for (int i = 0; i < code_rows() - 1; i++) { if (dir < 0) ed_up(); else ed_down(); } }
 
 static void ed_full(void) {
 	set_status(L("ZEILE ZU LANG/PROGRAMM VOLL", "LINE TOO LONG / PROGRAM FULL"), RED);
@@ -570,7 +584,13 @@ static void ed_duplicate_line(void) {
 	set_status(msg, GREEN);
 }
 
+static void undo_typing(void);
+static void undo_typing_end(void);
+
 static void ed_key(int k, bool shifted) {
+	selKind = SEL_NONE;
+	if (k == KC_RET || k == KC_DEL || k == KC_CLR || (k >= 32 && k < 127)) undo_typing();
+	else undo_typing_end();
 	switch (k) {
 	case KC_LEFT:  if (shifted) ed_home(); else ed_left(); break;
 	case KC_RIGHT: if (shifted) ed_end(); else ed_right(); break;
@@ -583,6 +603,706 @@ static void ed_key(int k, bool shifted) {
 		if (k >= 32 && k < 127) ed_insert((char)k);
 	}
 	ed_scroll();
+}
+
+/* ------------------------------------------------------------------ */
+/* refactoring: undo, clipboard, selection, toolbar, rename / usages    */
+/* ------------------------------------------------------------------ */
+
+/* --- undo: snapshots of whole files (small on the DS) --- */
+
+#define UNDO_MAX 20
+typedef struct { int nfiles; int file[BASIC_PROJECT_FILES]; char *text[BASIC_PROJECT_FILES]; int curFile, line, col; } UndoStep;
+static UndoStep undoSteps[UNDO_MAX], redoSteps[UNDO_MAX];
+static int nUndo, nRedo;
+static int undoTag;                /* last action that pushed a step (to merge repeats) */
+
+static char *file_text(int f) {
+	int n = basic_file_line_count(f), len = 1;
+	for (int i = 0; i < n; i++) len += (int)strlen(basic_file_line_text(f, i)) + 1;
+	char *p = malloc(len), *o = p;
+	if (!p) return NULL;
+	for (int i = 0; i < n; i++) {
+		const char *t = basic_file_line_text(f, i);
+		int l = (int)strlen(t);
+		memcpy(o, t, l);
+		o += l;
+		if (i < n - 1) *o++ = '\n';
+	}
+	*o = 0;
+	if (!n) { free(p); p = NULL; }
+	return p ? p : calloc(1, 2);
+}
+
+static void step_free(UndoStep *s) {
+	for (int i = 0; i < s->nfiles; i++) free(s->text[i]);
+	s->nfiles = 0;
+}
+
+/* snapshot of one file (f >= 0) or all files (f < 0) */
+static void step_take(UndoStep *s, int f) {
+	s->nfiles = 0;
+	int nf = basic_file_count();
+	for (int i = 0; i < nf; i++) {
+		if (f >= 0 && i != f) continue;
+		s->file[s->nfiles] = i;
+		s->text[s->nfiles] = file_text(i);
+		s->nfiles++;
+	}
+	s->curFile = basic_current_file();
+	s->line = curLine;
+	s->col = curCol;
+}
+
+static void stack_push(UndoStep *st, int *n, UndoStep *s) {
+	if (*n == UNDO_MAX) { step_free(&st[0]); memmove(st, st + 1, (UNDO_MAX - 1) * sizeof *st); (*n)--; }
+	st[(*n)++] = *s;
+}
+
+/* before a change: tag != 0 merges repeats of the same action */
+static void undo_push(int f, int tag) {
+	if (tag && tag == undoTag && nUndo) return;
+	UndoStep s;
+	step_take(&s, f);
+	stack_push(undoSteps, &nUndo, &s);
+	while (nRedo) step_free(&redoSteps[--nRedo]);
+	undoTag = tag;
+}
+
+static void restore_step(UndoStep *s) {
+	int cur = basic_current_file();
+	for (int i = 0; i < s->nfiles; i++) {
+		int f = s->file[i];
+		if (f >= basic_file_count()) continue;
+		basic_select_file(f);
+		while (basic_line_count()) basic_delete_line(basic_line_count() - 1);
+		const char *p = s->text[i];
+		if (!*p) continue;
+		for (;;) {
+			const char *e = strchr(p, '\n');
+			int l = e ? (int)(e - p) : (int)strlen(p);
+			char buf[BASIC_LINE_MAX + 1];
+			snprintf(buf, sizeof buf, "%.*s", l, p);
+			basic_insert_line(basic_line_count(), buf);
+			if (!e) break;
+			p = e + 1;
+		}
+	}
+	basic_select_file(s->curFile < basic_file_count() ? s->curFile : cur);
+	sync_file();
+	curLine = s->line;
+	curCol = s->col;
+	selKind = SEL_NONE;
+	ed_clamp();
+	ed_set_want();
+	ed_scroll();
+}
+
+/* dir -1 undo, 1 redo */
+static void undo_redo(int dir) {
+	UndoStep *from = dir < 0 ? undoSteps : redoSteps, *to = dir < 0 ? redoSteps : undoSteps;
+	int *nf = dir < 0 ? &nUndo : &nRedo, *nt = dir < 0 ? &nRedo : &nUndo;
+	if (!*nf) { set_status(dir < 0 ? L("NICHTS ZUM R\x9a" "CKG\x84NGIGMACHEN", "NOTHING TO UNDO") : L("NICHTS ZUM WIEDERHOLEN", "NOTHING TO REDO"), RED); return; }
+	UndoStep s = from[--*nf], back;
+	step_take(&back, s.nfiles == 1 ? s.file[0] : -1);
+	back.line = curLine; back.col = curCol;
+	restore_step(&s);
+	step_free(&s);
+	stack_push(to, nt, &back);
+	undoTag = 0;
+	set_status(dir < 0 ? L("R\x9a" "CKG\x84NGIG GEMACHT", "UNDONE") : L("WIEDERHOLT", "REDONE"), GREEN);
+}
+
+/* typing: one snapshot per burst of typing in a line */
+static bool typingBurst;
+static int  burstLine;
+static void undo_typing(void) {
+	if (typingBurst && burstLine == curLine && undoTag == 1) return;
+	undo_push(basic_current_file(), 0);
+	undoTag = 1;
+	typingBurst = true;
+	burstLine = curLine;
+}
+
+static void undo_typing_end(void) { typingBurst = false; }
+
+/* --- clipboard: whole lines or text inside a line --- */
+
+static char *clip;
+static bool clipLines;
+static int  clipCount;
+
+static void clip_set(const char *t, bool lines, int count) {
+	free(clip);
+	clip = strdup(t);
+	clipLines = lines;
+	clipCount = count;
+}
+
+static void sel_order(void) { if (selA > selB) { int t = selA; selA = selB; selB = t; } }
+
+static void copy_selection(bool cut) {
+	char msg[40];
+	if (selKind == SEL_LINES) {
+		sel_order();
+		int len = 1;
+		for (int i = selA; i <= selB; i++) len += (int)strlen(basic_line_text(i)) + 1;
+		char *b = malloc(len), *o = b;
+		if (!b) return;
+		for (int i = selA; i <= selB; i++) {
+			int l = (int)strlen(basic_line_text(i));
+			memcpy(o, basic_line_text(i), l);
+			o += l;
+			if (i < selB) *o++ = '\n';
+		}
+		*o = 0;
+		clip_set(b, true, selB - selA + 1);
+		free(b);
+		if (cut) {
+			undo_push(basic_current_file(), 0);
+			for (int i = selB; i >= selA; i--) basic_delete_line(i);
+			curLine = selA;
+			curCol = 0;
+			selKind = SEL_NONE;
+		}
+		snprintf(msg, sizeof msg, cut ? L("%d ZEILEN AUSGESCHNITTEN", "%d LINES CUT") : L("%d ZEILEN KOPIERT", "%d LINES COPIED"), clipCount);
+	} else if (selKind == SEL_WORD || selKind == SEL_CHARS) {
+		const char *t = basic_line_text(selLine);
+		char b[BASIC_LINE_MAX + 1];
+		snprintf(b, sizeof b, "%.*s", selB - selA, t + selA);
+		clip_set(b, false, 1);
+		if (cut) {
+			undo_push(basic_current_file(), 0);
+			char nb[BASIC_LINE_MAX + 1];
+			snprintf(nb, sizeof nb, "%.*s%s", selA, t, t + selB);
+			basic_set_line(selLine, nb);
+			curLine = selLine;
+			curCol = selA;
+			selKind = SEL_NONE;
+		}
+		snprintf(msg, sizeof msg, cut ? L("\"%.18s\" AUSGESCHNITTEN", "\"%.18s\" CUT") : L("\"%.18s\" KOPIERT", "\"%.18s\" COPIED"), clip);
+	} else return;
+	ed_clamp();
+	ed_set_want();
+	set_status(msg, GREEN);
+}
+
+static void paste_clip(void) {
+	if (!clip) { set_status(L("ZWISCHENABLAGE LEER", "CLIPBOARD EMPTY"), RED); return; }
+	undo_push(basic_current_file(), 0);
+	if (clipLines) {
+		int at = basic_line_count() ? curLine : 0, n = 0;
+		const char *p = clip;
+		for (;;) {
+			const char *e = strchr(p, '\n');
+			char buf[BASIC_LINE_MAX + 1];
+			snprintf(buf, sizeof buf, "%.*s", e ? (int)(e - p) : (int)strlen(p), p);
+			if (!basic_insert_line(at + n, buf)) { ed_full(); break; }
+			n++;
+			if (!e) break;
+			p = e + 1;
+		}
+		selKind = SEL_LINES;
+		selA = at;
+		selB = at + n - 1;
+		curLine = at;
+		curCol = 0;
+	} else {
+		if (!ed_ensure_line()) return;
+		const char *t = basic_line_text(curLine);
+		int l = (int)strlen(t), cl = (int)strlen(clip);
+		if (l + cl > BASIC_LINE_MAX) { ed_full(); return; }
+		char buf[BASIC_LINE_MAX + 2];
+		memcpy(buf, t, curCol);
+		memcpy(buf + curCol, clip, cl);
+		strcpy(buf + curCol + cl, t + curCol);
+		basic_set_line(curLine, buf);
+		curCol += cl;
+		selKind = SEL_NONE;
+	}
+	ed_clamp();
+	ed_set_want();
+	ed_scroll();
+	set_status(L("EINGEF\x9a" "GT", "PASTED"), GREEN);
+}
+
+/* --- line block actions --- */
+
+static void lines_indent(int dir) {
+	sel_order();
+	undo_push(basic_current_file(), dir < 0 ? 2 : 3);
+	for (int i = selA; i <= selB; i++) {
+		const char *t = basic_line_text(i);
+		char buf[BASIC_LINE_MAX + 1];
+		if (dir > 0) {
+			if ((int)strlen(t) + 2 > BASIC_LINE_MAX) continue;
+			snprintf(buf, sizeof buf, "  %s", t);
+		} else {
+			int sp = (int)strspn(t, " ");
+			snprintf(buf, sizeof buf, "%s", t + (sp > 2 ? 2 : sp));
+		}
+		basic_set_line(i, buf);
+	}
+}
+
+static void lines_move(int dir) {
+	sel_order();
+	int n = basic_line_count();
+	if ((dir < 0 && selA == 0) || (dir > 0 && selB >= n - 1)) return;
+	undo_push(basic_current_file(), dir < 0 ? 4 : 5);
+	/* the neighbouring line jumps to the other side of the block */
+	int from = dir < 0 ? selA - 1 : selB + 1, to = dir < 0 ? selB : selA;
+	char buf[BASIC_LINE_MAX + 1];
+	snprintf(buf, sizeof buf, "%s", basic_line_text(from));
+	basic_delete_line(from);
+	basic_insert_line(to, buf);
+	selA += dir;
+	selB += dir;
+	if (curLine >= selA - dir && curLine <= selB - dir) curLine += dir;
+	else curLine = selA;
+	ed_scroll();
+}
+
+static void lines_duplicate(void) {
+	sel_order();
+	int cnt = selB - selA + 1;
+	if (basic_line_count() + cnt > BASIC_MAX_LINES) { ed_full(); return; }
+	undo_push(basic_current_file(), 0);
+	for (int i = 0; i < cnt; i++) {
+		char buf[BASIC_LINE_MAX + 1];
+		snprintf(buf, sizeof buf, "%s", basic_line_text(selA + i));
+		basic_insert_line(selB + 1 + i, buf);
+	}
+	selA += cnt;
+	selB += cnt;
+	curLine = selA;
+	curCol = 0;
+	ed_scroll();
+}
+
+/* --- rename / usages: list of all places on the top screen --- */
+
+enum { LIST_NONE, LIST_RENAME, LIST_USES };
+static int listMode;
+static RefTarget listTarget;
+static RefOcc listOcc[REF_MAX];
+static int listCount, listSel, listTop;
+static char renBuf[32];
+static int  renLen;
+static char renError[33];
+static Screen listScr;
+#define LIST_FIRST 3                 /* first list row on the screen */
+
+/* rows of the list: file headers (occ = -1 - file) and lines (first occurrence) */
+static short listRow[REF_MAX + BASIC_PROJECT_FILES];
+static int   nListRows;
+
+static void list_build(void) {
+	nListRows = 0;
+	int lastFile = -1;
+	for (int i = 0; i < listCount; i++) {
+		RefOcc *o = &listOcc[i];
+		if (o->file != lastFile) { listRow[nListRows++] = (short)(-1 - o->file); lastFile = o->file; }
+		if (i && o->file == listOcc[i - 1].file && o->line == listOcc[i - 1].line) continue;
+		listRow[nListRows++] = (short)i;
+	}
+}
+
+static int list_files(void) {
+	int n = 0;
+	for (int i = 0; i < nListRows; i++) if (listRow[i] < 0) n++;
+	return n;
+}
+
+static int list_code_count(void) {
+	int n = 0;
+	for (int i = 0; i < listCount; i++) n += listOcc[i].code;
+	return n;
+}
+
+static const char *kind_label(int k) {
+	return k == RK_VAR ? L("VARIABLE", "VARIABLE") : k == RK_MEMBER ? L("MEMBER", "MEMBER") :
+	       k == RK_CLASS ? L("KLASSE", "CLASS") : L("FUNKTION/KONST.", "FUNCTION/CONST");
+}
+
+/* the word under the selection / cursor as a refactoring target */
+static bool target_here(RefTarget *t) {
+	int line = selKind == SEL_WORD ? selLine : curLine;
+	int col = selKind == SEL_WORD ? selA : curCol;
+	if (line >= basic_line_count()) return false;
+	const char *s = basic_line_text(line);
+	if (s[col] == '$') col++;
+	if (ref_target(basic_current_file(), line, col, t) != RK_NONE) return true;
+	set_status(L("KEIN NAME AUS DEM PROGRAMM", "NOT A NAME OF THE PROGRAM"), RED);
+	return false;
+}
+
+static void open_list(int mode) {
+	RefTarget t;
+	if (!target_here(&t)) return;
+	listTarget = t;
+	listCount = ref_find(&t, listOcc, REF_MAX);
+	list_build();
+	listMode = mode;
+	listSel = 0;
+	listTop = 0;
+	renError[0] = 0;
+	snprintf(renBuf, sizeof renBuf, "%s", t.name);
+	renLen = (int)strlen(renBuf);
+	/* usages start at the place of the cursor */
+	for (int i = 0; i < nListRows; i++) {
+		if (listRow[i] < 0) continue;
+		RefOcc *o = &listOcc[listRow[i]];
+		if (o->file == basic_current_file() && o->line == (selKind == SEL_WORD ? selLine : curLine)) { listSel = i; break; }
+	}
+	if (listRow[listSel] < 0 && nListRows > 1) listSel = 1;
+}
+
+static void close_list(void) { listMode = LIST_NONE; }
+
+static void select_word_at(int f, int line, int col) {
+	if (f != basic_current_file()) select_file(f);
+	curLine = line;
+	curCol = col;
+	int s, e;
+	if (line < basic_line_count() && ref_word(basic_line_text(line), col, &s, &e)) {
+		selKind = SEL_WORD; selLine = line; selA = s; selB = e;
+	} else selKind = SEL_NONE;
+	ed_clamp();
+	ed_set_want();
+	ed_scroll();
+}
+
+static void go_definition(void) {
+	RefTarget t;
+	if (!target_here(&t)) return;
+	int f, l, c;
+	if (!ref_definition(&t, &f, &l, &c)) { set_status(L("KEINE DEFINITION GEFUNDEN", "NO DEFINITION FOUND"), RED); return; }
+	select_word_at(f, l, c);
+	char msg[40];
+	snprintf(msg, sizeof msg, "%s:%d", basic_file_name(f), l + 1);
+	set_status(msg, GREEN);
+}
+
+static void list_jump(void) {
+	if (listSel >= nListRows || listRow[listSel] < 0) return;
+	RefOcc *o = &listOcc[listRow[listSel]];
+	close_list();
+	select_word_at(o->file, o->line, o->col);
+}
+
+static void apply_rename(void) {
+	renBuf[renLen] = 0;
+	if (!strcmp(renBuf, listTarget.name)) { close_list(); return; }
+	char err[64];
+	undo_push(-1, 0);
+	int n = ref_rename(&listTarget, renBuf, err, sizeof err);
+	if (n < 0) {
+		step_free(&undoSteps[--nUndo]);
+		snprintf(renError, sizeof renError, "%.32s", err);
+		return;
+	}
+	char msg[40];
+	snprintf(msg, sizeof msg, L("%d STELLEN GE\x84NDERT", "%d PLACES CHANGED"), n);
+	set_status(msg, GREEN);
+	close_list();
+	selKind = SEL_NONE;
+	ed_clamp();
+}
+
+static void list_move(int d) {
+	int i = listSel;
+	do { i += d; } while (i >= 0 && i < nListRows && listRow[i] < 0);
+	if (i >= 0 && i < nListRows) listSel = i;
+}
+
+static void list_key(int k) {
+	if (listMode == LIST_RENAME) {
+		if (k == KC_RET) apply_rename();
+		else if (k == KC_SCRN || k == KC_RUN) close_list();
+		else if (k == KC_DEL) { if (renLen) renBuf[--renLen] = 0; renError[0] = 0; }
+		else if (k == KC_UP) list_move(-1);
+		else if (k == KC_DOWN) list_move(1);
+		else if (k > 32 && k < 127 && (isalnum(k) || k == '_' || k >= 128) && renLen < 31) {
+			if (renLen == 0 && isdigit(k)) return;
+			renBuf[renLen++] = (char)k;
+			renBuf[renLen] = 0;
+			renError[0] = 0;
+		}
+	} else {
+		if (k == KC_RET) list_jump();
+		else if (k == KC_DEL || k == KC_SCRN || k == KC_RUN) close_list();
+		else if (k == KC_UP || k == KC_LEFT) list_move(-1);
+		else if (k == KC_DOWN || k == KC_RIGHT) list_move(1);
+	}
+}
+
+static void render_list(int *cx, int *cy) {
+	char buf[64];
+	u8 colors[BASIC_LINE_MAX + 1];
+	Screen *s = &listScr;
+	scr_clear(s, TEXTCOL);
+	for (int x = 0; x < COLS; x++) scr_put(s, x, 0, ' ', BAR_FG, BAR_BG);
+	snprintf(buf, sizeof buf, " %s: %s", listMode == LIST_RENAME ? L("UMBENENNEN", "RENAME") : L("VERWENDUNG", "USAGES"), kind_label(listTarget.kind));
+	scr_text(s, 0, 0, buf, BAR_FG, BAR_BG);
+	bool dollar = listTarget.kind == RK_VAR;
+	int nfiles = list_files(), ncode = list_code_count();
+	*cx = *cy = -1;
+	if (listMode == LIST_RENAME) {
+		snprintf(buf, sizeof buf, "%s%.12s \x1a %s", dollar ? "$" : "", listTarget.name, dollar ? "$" : "");
+		scr_text(s, 0, 1, buf, GREY, NOFILL);
+		int x = (int)strlen(buf);
+		scr_text(s, x, 1, renBuf, BLUE, NOFILL);
+		*cx = x + renLen;
+		*cy = 1;
+		if (renError[0]) scr_text(s, 0, 2, renError, RED, NOFILL);
+		else {
+			snprintf(buf, sizeof buf, L("%d STELLEN IN %d DATEI%s", "%d PLACES IN %d FILE%s"), ncode, nfiles,
+			         nfiles == 1 ? "" : L("EN", "S"));
+			scr_text(s, 0, 2, buf, GREEN, NOFILL);
+		}
+	} else {
+		snprintf(buf, sizeof buf, "%s%.20s: %d", dollar ? "$" : "", listTarget.name, ncode);
+		scr_text(s, 0, 1, buf, BLUE, NOFILL);
+	}
+	/* keep the selected row visible */
+	int rows = STATUS_ROW - LIST_FIRST;
+	if (listSel < listTop) listTop = listSel > 0 && listRow[listSel - 1] < 0 ? listSel - 1 : listSel;
+	if (listSel >= listTop + rows) listTop = listSel - rows + 1;
+	for (int r = 0; r < rows && listTop + r < nListRows; r++) {
+		int y = LIST_FIRST + r, idx = listRow[listTop + r];
+		if (idx < 0) { scr_text(s, 0, y, basic_file_name(-1 - idx), PURPLE, NOFILL); continue; }
+		RefOcc *o = &listOcc[idx];
+		const char *t = basic_file_line_text(o->file, o->line);
+		/* the line as it would look after the rename */
+		char line[BASIC_LINE_MAX * 2 + 1];
+		unsigned char mark[BASIC_LINE_MAX * 2 + 1];
+		int n = 0, p = 0;
+		for (int k = idx; k < listCount && listOcc[k].file == o->file && listOcc[k].line == o->line; k++) {
+			RefOcc *q = &listOcc[k];
+			while (p < q->col && n < BASIC_LINE_MAX) { mark[n] = 0; line[n++] = t[p++]; }
+			const char *w = listMode == LIST_RENAME && q->code ? renBuf : t + q->col;
+			int wl = listMode == LIST_RENAME && q->code ? renLen : q->len;
+			for (int j = 0; j < wl && n < BASIC_LINE_MAX * 2; j++) { mark[n] = q->code ? 1 : 2; line[n++] = w[j]; }
+			p = q->col + q->len;
+		}
+		while (t[p] && n < BASIC_LINE_MAX * 2) { mark[n] = 0; line[n++] = t[p++]; }
+		line[n] = 0;
+		syntax_highlight(line, n, colors);
+		int sel = listTop + r == listSel;
+		snprintf(buf, sizeof buf, "%4d ", o->line + 1);
+		scr_text(s, 0, y, buf, sel ? WHITE : GREY, sel ? BLUE : NOFILL);
+		int ind = (int)strspn(line, " "), x = 5;
+		for (int j = ind; j < n && x < COLS; j++, x++) {
+			if (mark[j] == 1) scr_put(s, x, y, line[j], WHITE, GREEN);
+			else if (mark[j] == 2) scr_put(s, x, y, line[j], WHITE, GREY);
+			else scr_put(s, x, y, line[j], colors[j], NOFILL);
+		}
+	}
+	for (int x = 0; x < COLS; x++) scr_put(s, x, STATUS_ROW, ' ', FOOT_FG, FOOT_BG);
+	scr_text(s, 0, STATUS_ROW, listMode == LIST_RENAME ? L("RET:UMBENENNEN  SCRN:ABBRUCH", "RET:RENAME  SCRN:CANCEL")
+	                                                   : L("A:SPRINGEN \x18\x19:WAHL B:ZUR\x9a" "CK", "A:JUMP \x18\x19:SELECT B:BACK"),
+	         FOOT_FG, FOOT_BG);
+}
+
+/* a tap on the list (screens swapped): pick the line, usages jump there */
+static void list_touch(int row) {
+	int i = listTop + row - LIST_FIRST;
+	if (row < LIST_FIRST || i < 0 || i >= nListRows || listRow[i] < 0) return;
+	listSel = i;
+	if (listMode == LIST_USES) list_jump();
+}
+
+/* --- toolbar below the code while the screens are swapped --- */
+
+enum { TA_RENAME = 1, TA_DEF, TA_USES, TA_COPY, TA_CUT, TA_DUP, TA_OUTDENT, TA_INDENT, TA_UP, TA_DOWN,
+       TA_PASTE, TA_UNDO, TA_REDO, TA_DONE };
+typedef struct { const char *label; int action, x, w; } ToolBtn;
+static ToolBtn tools[8];
+static int ntools;
+static bool swapStick;             /* L was tapped: stays swapped */
+static bool swapBlock;             /* rename started: back until L is released */
+
+static void tool(const char *label, int action) {
+	if (ntools < 8) { tools[ntools].label = label; tools[ntools].action = action; ntools++; }
+}
+
+static void build_toolbar(void) {
+	ntools = 0;
+	if (selKind == SEL_WORD) {
+		tool(L("Umben.", "Rename"), TA_RENAME);
+		tool(L("Def.", "Def"), TA_DEF);
+		tool(L("Verw.", "Uses"), TA_USES);
+		tool(L("Kopie", "Copy"), TA_COPY);
+		tool(L("Aus", "Cut"), TA_CUT);
+	} else if (selKind == SEL_CHARS) {
+		tool(L("Aus", "Cut"), TA_CUT);
+		tool(L("Kopie", "Copy"), TA_COPY);
+		tool(L("R\x81" "ckg.", "Undo"), TA_UNDO);
+	} else if (selKind == SEL_LINES) {
+		tool(L("Aus", "Cut"), TA_CUT);
+		tool(L("Kopie", "Copy"), TA_COPY);
+		tool(L("Dupl", "Dup"), TA_DUP);
+		tool("\xae", TA_OUTDENT);
+		tool("\xaf", TA_INDENT);
+		tool("\x18", TA_UP);
+		tool("\x19", TA_DOWN);
+	} else {
+		if (clip) tool(L("Einf.", "Paste"), TA_PASTE);
+		tool(L("R\x81" "ckg.", "Undo"), TA_UNDO);
+		tool(L("Wdh.", "Redo"), TA_REDO);
+		if (swapStick) tool(L("Fertig", "Done"), TA_DONE);
+	}
+	/* widths: label + 2, with gaps when there is room */
+	int total = 0, pad = 2;
+	for (int i = 0; i < ntools; i++) total += (int)strlen(tools[i].label) + 2;
+	if (total > COLS) pad = 1;                   /* tight: one column of padding */
+	total = 0;
+	for (int i = 0; i < ntools; i++) { tools[i].w = (int)strlen(tools[i].label) + pad; total += tools[i].w; }
+	int extra = COLS - total, gap = ntools > 1 && extra >= ntools - 1 ? 1 : 0;
+	extra -= gap * (ntools - 1);
+	int x = 0;
+	for (int i = 0; i < ntools; i++) {
+		int add = ntools ? extra / ntools + (i < extra % ntools ? 1 : 0) : 0;
+		if (add > 4) add = 4;
+		tools[i].w += add;
+		tools[i].x = x;
+		x += tools[i].w + gap;
+	}
+}
+
+static void render_toolbar(void) {
+	build_toolbar();
+	int top = CODE_TOP + code_rows();
+	for (int y = top; y < top + TOOL_ROWS; y++)
+		for (int x = 0; x < COLS; x++) scr_put(&edit, x, y, ' ', TEXTCOL, NOFILL);
+	for (int i = 0; i < ntools; i++) {
+		u8 bg = (i & 1) ? LBLUE : BLUE;
+		for (int y = top; y < top + TOOL_ROWS; y++)
+			for (int x = tools[i].x; x < tools[i].x + tools[i].w && x < COLS; x++) scr_put(&edit, x, y, ' ', WHITE, bg);
+		int l = (int)strlen(tools[i].label);
+		scr_text(&edit, tools[i].x + (tools[i].w - l) / 2, top + 1, tools[i].label, WHITE, bg);
+	}
+}
+
+static void tool_action(int a) {
+	switch (a) {
+	case TA_RENAME: open_list(LIST_RENAME); swapStick = false; swapBlock = listMode != LIST_NONE; break;
+	case TA_USES: open_list(LIST_USES); break;
+	case TA_DEF: go_definition(); break;
+	case TA_COPY: copy_selection(false); break;
+	case TA_CUT: copy_selection(true); break;
+	case TA_DUP: lines_duplicate(); break;
+	case TA_OUTDENT: lines_indent(-1); break;
+	case TA_INDENT: lines_indent(1); break;
+	case TA_UP: lines_move(-1); break;
+	case TA_DOWN: lines_move(1); break;
+	case TA_PASTE: paste_clip(); break;
+	case TA_UNDO: undo_redo(-1); break;
+	case TA_REDO: undo_redo(1); break;
+	case TA_DONE: swapStick = false; break;
+	}
+	if (a != TA_UNDO && a != TA_REDO && a != TA_OUTDENT && a != TA_INDENT && a != TA_UP && a != TA_DOWN) undoTag = 0;
+}
+
+/* --- stylus on the code --- */
+
+/* screen cell -> line and column (rows behind the text: end of the last line) */
+static bool cell_pos(int row, int col, int *line, int *idx) {
+	int n = basic_line_count();
+	if (!n) return false;
+	int gw = gutter_w(), tw = COLS - gw;
+	if (row < CODE_TOP) row = CODE_TOP;
+	if (row >= CODE_TOP + code_rows()) row = CODE_TOP + code_rows() - 1;
+	if (rowLine[row] < 0) { *line = n - 1; *idx = line_len(n - 1); return true; }
+	*line = rowLine[row];
+	int c = col - gw;
+	if (c < 0) c = 0;
+	*idx = rowSub[row] * tw + c;
+	if (*idx > line_len(*line)) *idx = line_len(*line);
+	return true;
+}
+
+static void scroll_rows(int d) {
+	for (; d > 0; d--) {                         /* down */
+		if (topSub + 1 < line_rows(topLine)) topSub++;
+		else if (topLine < basic_line_count() - 1) { topLine++; topSub = 0; }
+	}
+	for (; d < 0; d++) {
+		if (topSub > 0) topSub--;
+		else if (topLine > 0) { topLine--; topSub = line_rows(topLine) - 1; }
+	}
+}
+
+static int  penState;              /* 0 up, 1 on code, 2 scrolling the gutter, 3 toolbar / list */
+static int  penX, penY, penLine, penIdx, penRow, penMoved;
+
+static void edit_touch(bool touching, int px, int py) {
+	int row = py / 8, col = px / 8;
+	int toolTop = CODE_TOP + code_rows();
+	if (touching && !penState) {
+		penX = px; penY = py; penRow = row; penMoved = 0;
+		if (listMode) { penState = 3; list_touch(row); return; }
+		if (row >= toolTop && row < toolTop + TOOL_ROWS) {
+			penState = 3;
+			build_toolbar();
+			for (int i = 0; i < ntools; i++)
+				if (col >= tools[i].x && col < tools[i].x + tools[i].w) { tool_action(tools[i].action); break; }
+			return;
+		}
+		if (row < CODE_TOP || row >= toolTop) { penState = 3; return; }
+		if (col < gutter_w()) { penState = 2; return; }
+		penState = cell_pos(row, col, &penLine, &penIdx) ? 1 : 3;
+		return;
+	}
+	if (touching && penState == 2) {
+		if (row != penRow) { scroll_rows(penRow - row); penRow = row; }
+		return;
+	}
+	if (touching && penState == 1) {
+		int line, idx;
+		/* at the top / bottom edge: scroll while selecting */
+		if ((row <= CODE_TOP || row >= toolTop - 1) && (frameCount & 3) == 0) scroll_rows(row <= CODE_TOP ? -1 : 1);
+		if (!cell_pos(row, col, &line, &idx)) return;
+		if (line != penLine || (penMoved == 2 && abs(py - penY) > 4)) {
+			penMoved = 2;
+			selKind = SEL_LINES;
+			selA = penLine;
+			selB = line;
+			curLine = line;
+			curCol = 0;
+		} else if (penMoved != 2 && (abs(px - penX) >= 6 || penMoved == 1)) {
+			penMoved = 1;
+			selKind = idx == penIdx ? SEL_NONE : SEL_CHARS;
+			selLine = line;
+			selA = penIdx < idx ? penIdx : idx;
+			selB = penIdx < idx ? idx : penIdx;
+			curLine = line;
+			curCol = idx;
+		}
+		return;
+	}
+	if (!touching && penState) {
+		if (penState == 1 && !penMoved) {          /* tap: word or cursor */
+			curLine = penLine;
+			curCol = penIdx;
+			int s, e;
+			const char *t = basic_line_text(penLine);
+			if (ref_word(t, penIdx, &s, &e) && penIdx >= s && penIdx < e) { selKind = SEL_WORD; selLine = penLine; selA = s; selB = e; }
+			else selKind = SEL_NONE;
+		}
+		if (selKind == SEL_LINES) sel_order();
+		ed_clamp();
+		ed_set_want();
+		penState = 0;
+	}
+}
+
+/* status line while code and selection are on the touch screen */
+static void selection_status(char *l1, int size) {
+	if (selKind == SEL_LINES) snprintf(l1, size, L("%d ZEILEN MARKIERT", "%d LINES SELECTED"), (selA > selB ? selA - selB : selB - selA) + 1);
+	else if (selKind == SEL_WORD || selKind == SEL_CHARS) snprintf(l1, size, "\"%.*s\"", selB - selA > 24 ? 24 : selB - selA, basic_line_text(selLine) + selA);
+	else snprintf(l1, size, "%s", L("TIPPEN:WORT  ZIEHEN:ZEILEN", "TAP:WORD  DRAG:LINES"));
 }
 
 static void render_edit(int *cx, int *cy) {
@@ -616,21 +1336,29 @@ static void render_edit(int *cx, int *cy) {
 		scr_text(&edit, gw, CODE_TOP + 7, L("START/RUN: AUSF\x9a" "HREN", "START/RUN: RUN IT"), GREY, NOFILL);
 		scr_text(&edit, gw, CODE_TOP + 8, L("SCRN: REPL-KONSOLE", "SCRN: REPL CONSOLE"), GREY, NOFILL);
 	}
-	int row = CODE_TOP, line = topLine, sub = topSub;
-	while (row < CODE_TOP + CODE_ROWS && line < n) {
+	int row = CODE_TOP, line = topLine, sub = topSub, end = CODE_TOP + code_rows();
+	for (int r = 0; r < ROWS; r++) { rowLine[r] = -1; rowSub[r] = 0; }
+	while (row < end && line < n) {
 		const char *t = basic_line_text(line);
 		int l = (int)strlen(t), rows = l / tw + 1;
+		bool inLines = selKind == SEL_LINES && line >= selA && line <= selB;
 		syntax_highlight(t, l, colors);
-		for (; sub < rows && row < CODE_TOP + CODE_ROWS; sub++, row++) {
+		for (; sub < rows && row < end; sub++, row++) {
+			rowLine[row] = line;
+			rowSub[row] = sub;
+			if (inLines) for (int c = gw; c < COLS; c++) scr_put(&edit, c, row, ' ', TEXTCOL, LGREY);
 			if (sub == 0) {
 				snprintf(buf, sizeof buf, "%*d", gw - 1, line + 1);
-				if (basic_breakpoint(basic_current_file(), line)) scr_text(&edit, 0, row, buf, WHITE, RED);
+				if (inLines) scr_text(&edit, 0, row, buf, WHITE, BLUE);
+				else if (basic_breakpoint(basic_current_file(), line)) scr_text(&edit, 0, row, buf, WHITE, RED);
 				else scr_text(&edit, 0, row, buf, line == curLine ? RED : GREY, NOFILL);
 			}
 			for (int c = 0; c < tw; c++) {
 				int idx = sub * tw + c;
 				if (idx >= l) break;
-				scr_put(&edit, gw + c, row, t[idx], colors[idx], NOFILL);
+				if ((selKind == SEL_WORD || selKind == SEL_CHARS) && line == selLine && idx >= selA && idx < selB)
+					scr_put(&edit, gw + c, row, t[idx], WHITE, BLUE);
+				else scr_put(&edit, gw + c, row, t[idx], colors[idx], inLines ? LGREY : NOFILL);
 			}
 			if (line == curLine && curCol / tw == sub) { *cx = gw + curCol % tw; *cy = row; }
 		}
@@ -641,13 +1369,13 @@ static void render_edit(int *cx, int *cy) {
 	/* status bar */
 	for (int x = 0; x < COLS; x++) scr_put(&edit, x, STATUS_ROW, ' ', FOOT_FG, FOOT_BG);
 	scr_text(&edit, 0, STATUS_ROW, statusMsg, statusCol, FOOT_BG);
+	if (edSwap) render_toolbar();
 }
 
 /* ------------------------------------------------------------------ */
 /* REPL console: the output terminal with a "> " prompt                */
 /* ------------------------------------------------------------------ */
 
-static int  frameCount;
 static bool replActive;               /* prompt shown, input goes there  */
 #define HISTORY 8
 static char history[HISTORY][INPUT_MAX + 1];
@@ -1099,7 +1827,7 @@ static char compBefore[BASIC_LINE_MAX + 1];
 
 /* where typing goes: 1 editor, 2 REPL prompt, 0 nowhere */
 static int typing_context(void) {
-	if (basic_state() != BASIC_IDLE || helpOpen || browserOpen || spredOpen || sndedOpen) return 0;
+	if (basic_state() != BASIC_IDLE || helpOpen || browserOpen || spredOpen || sndedOpen || listMode) return 0;
 	if (view == VIEW_EDIT) return 1;
 	if (view == VIEW_OUTPUT && replActive) return 2;
 	return 0;
@@ -1318,6 +2046,16 @@ static void update_status_panel(void) {
 	} else if (view == VIEW_OUTPUT) {
 		kbd_set_status(*basic_last_error() ? basic_last_error() : L("REPL: PHP ODER BEFEHL + RET", "REPL: PHP OR COMMAND + RET"),
 		               L("SCRN:EDITOR \x18\x19:VERLAUF", "SCRN:EDITOR \x18\x19:HISTORY"));
+	} else if (listMode) {
+		kbd_set_status(listMode == LIST_RENAME ? L("NEUER NAME + RET", "NEW NAME + RET") : L("VERWENDUNGEN", "USAGES"),
+		               listMode == LIST_RENAME ? L("SCRN: ABBRUCH", "SCRN: CANCEL") : L("A:SPRINGEN B:ZUR\x9a" "CK", "A:JUMP B:BACK"));
+	} else if (edSwap) {
+		selection_status(l1, sizeof l1);
+		kbd_set_status(l1, swapStick ? L("L: ZUR\x9a" "CK ZUR TASTATUR", "L: BACK TO THE KEYBOARD")
+		                             : L("L LOSLASSEN: ZUR\x9a" "CK", "RELEASE L: BACK"));
+	} else if (selKind != SEL_NONE) {
+		selection_status(l1, sizeof l1);
+		kbd_set_status(l1, L("L:AKTIONEN X:AUS Y:DUPL", "L:ACTIONS X:CUT Y:DUP"));
 	} else {
 		kbd_set_status(statusMsg, L("START:RUN SCRN:REPL SEL:HILFE", "START:RUN SCRN:REPL SEL:HELP"));
 	}
@@ -1417,10 +2155,26 @@ int main(int argc, char *argv[]) {
 				for (int i = 0; i < nf; i++) names[i] = basic_file_name(i);
 				kbd_set_tabs(names, nf, basic_current_file());
 			}
-			bool shoulder = (held & (KEY_L | KEY_R)) != 0;
-			/* swapped screens: the touch screen belongs to the program */
-		bool kbdTouch = touching && !(screensSwapped && st == BASIC_RUNNING);
+			/* code editor: L held or tapped puts the code on the touch screen */
+			bool edCtx = st == BASIC_IDLE && view == VIEW_EDIT && !helpOpen;
+			static int lDownAt;
+			static bool lActed;
+			if (down & KEY_L) { lDownAt = frameCount; lActed = false; }
+			if ((held & KEY_L) && (touching || (down & ~(u32)KEY_L))) lActed = true;
+			if ((keysUp() & KEY_L) && edCtx && !lActed && !swapBlock && frameCount - lDownAt < 15) swapStick = !swapStick;
+			if ((keysUp() & KEY_L) || (!listMode && !(held & KEY_L))) swapBlock = false;
+			if (!edCtx) swapStick = false;
+			bool wasSwap = edSwap;
+			edSwap = edCtx && !swapBlock && ((held & KEY_L) || swapStick);
+			/* a stylus that is down while the screens change belongs to neither */
+			static bool penHold;
+			if (edSwap != wasSwap) { penState = 0; apply_lcd(); if (touching) penHold = true; }
+			if (!touching) penHold = false;
+			bool shoulder = (held & (edCtx ? KEY_R : (KEY_L | KEY_R))) != 0;
+			/* swapped screens: the touch screen belongs to the program / the code */
+		bool kbdTouch = touching && !(screensSwapped && st == BASIC_RUNNING) && !edSwap && !penHold;
 		int k = kbd_poll(kbdTouch, tp.px, tp.py, shoulder);
+			if (edSwap) edit_touch(touching && !penHold, tp.px, tp.py);
 
 			/* suggestion chips; R released on its own takes the first one */
 			static bool rUsed;
@@ -1428,6 +2182,8 @@ int main(int argc, char *argv[]) {
 			if (k && (held & KEY_R)) rUsed = true;
 			if (k >= KC_SUGG && k <= KC_SUGG_MORE) { completion_key(k); k = KC_NONE; }
 			else if ((keysUp() & KEY_R) && !rUsed && ncomp && typing_context()) accept_completion(compPage);
+			static bool selUsed;
+			if (down & KEY_SELECT) selUsed = helpOpen;
 			if (down & KEY_START) k = KC_RUN;
 			if (rep & KEY_LEFT) k = KC_LEFT;
 			if (rep & KEY_RIGHT) k = KC_RIGHT;
@@ -1435,6 +2191,7 @@ int main(int argc, char *argv[]) {
 			if (rep & KEY_DOWN) k = KC_DOWN;
 			if (rep & KEY_B) k = KC_DEL;
 			if (down & KEY_A) k = KC_RET;
+			if ((held & KEY_SELECT) && edCtx && (down & (KEY_A | KEY_X | KEY_Y))) k = KC_NONE;
 
 			if (helpOpen) {
 				if (k == KC_UP) help_scroll(-1);
@@ -1445,7 +2202,15 @@ int main(int argc, char *argv[]) {
 					helpOpen = false;
 					if (k == KC_RUN) run_program();
 				}
-			} else if ((down & KEY_SELECT) && st == BASIC_IDLE) {
+			} else if ((held & KEY_SELECT) && edCtx && (down & (KEY_Y | KEY_A | KEY_X))) {
+				/* SELECT+Y undo, SELECT+A redo, SELECT+X paste */
+				selUsed = true;
+				if (down & KEY_Y) undo_redo(-1);
+				else if (down & KEY_A) undo_redo(1);
+				else paste_clip();
+			} else if (listMode && edCtx) {
+				if (k) list_key(k);
+			} else if ((keysUp() & KEY_SELECT) && !selUsed && st == BASIC_IDLE) {
 				helpOpen = true;
 			} else if (k >= KC_TAB && k < KC_TAB + BASIC_PROJECT_FILES) {
 				/* file tab: open that file in the editor */
@@ -1490,14 +2255,25 @@ int main(int argc, char *argv[]) {
 				else if (k && input_key(k)) repl_submit();
 			} else {
 				/* code editor: Y duplicates the line, X deletes it */
-				if (down & KEY_Y) { ed_duplicate_line(); ed_scroll(); }
-				else if (down & KEY_X) { ed_delete_line(); ed_scroll(); }
+				if (down & KEY_Y) {
+					if (selKind == SEL_LINES) lines_duplicate();
+					else { undo_push(basic_current_file(), 0); ed_duplicate_line(); }
+					ed_scroll();
+				} else if (down & KEY_X) {
+					if (selKind != SEL_NONE) copy_selection(true);
+					else if (basic_line_count()) {
+						clip_set(basic_line_text(curLine), true, 1);
+						undo_push(basic_current_file(), 0);
+						ed_delete_line();
+					}
+					ed_scroll();
+				}
 				else if (k == KC_RUN) run_program();
 				else if (k == KC_SCRN) view = VIEW_OUTPUT;
 				else if (k) ed_key(k, shoulder);
 			}
 		}
-		update_completion(dbgOpen || browserOpen || spredOpen || sndedOpen);
+		update_completion(dbgOpen || browserOpen || spredOpen || sndedOpen || edSwap);
 		/* program just finished? */
 		static BasicState prevState;
 		BasicState now = basic_state();
@@ -1527,6 +2303,11 @@ int main(int argc, char *argv[]) {
 			render_help();
 			scr_upload(&helpScr, -1, -1);
 			bgHide(gfxBg);
+		} else if (view == VIEW_EDIT && listMode) {
+			bgHide(gfxBg);
+			render_list(&cx, &cy);
+			if (!blink) cx = -1;
+			scr_upload(&listScr, cx, cy);
 		} else if (view == VIEW_EDIT) {
 			bgHide(gfxBg);
 			render_edit(&cx, &cy);

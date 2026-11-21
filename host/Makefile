@@ -118,10 +118,18 @@ test-modern: basic
 tcomp: test_complete.c ../source/php.c ../source/complete.c ../source/complete.h ../source/basic.h
 	$(CC) $(CFLAGS) -Wno-missing-field-initializers -o $@ test_complete.c ../source/php.c ../source/complete.c -lm
 
+tref: test_refactor.c ../source/php.c ../source/refactor.c ../source/refactor.h ../source/basic.h
+	$(CC) $(CFLAGS) -Wno-missing-field-initializers -o $@ test_refactor.c ../source/php.c ../source/refactor.c -lm
+
+test-refactor: tref
+	./tref > test.out
+	diff -u test_refactor.expected test.out && echo "refactor test passed"
+	rm -f test.out
+
 test-complete: tcomp
 	./tcomp > test.out
 	diff -u test_complete.expected test.out && echo "completion test passed"
 	rm -f test.out
 
 clean:
-	rm -f basic tcomp test.out
+	rm -f basic tcomp tref test.out

@@ -40,12 +40,14 @@ zwischen beiden.
 | Zwischen Editor und REPL-Konsole wechseln | `SCRN` | – |
 | Hilfeseite mit allen Befehlen (↑↓ scrollen, ←→ blättern) | – | SELECT |
 | Cursor bewegen | `←` `→` `↑` `↓` | Steuerkreuz |
-| Zeilenanfang / -ende, seitenweise blättern | – | L/R + ←→, L/R + ↑↓ |
+| Zeilenanfang / -ende, seitenweise blättern | – | R + ←→, R + ↑↓ (in der Konsole auch L) |
 | Neue Zeile (Einrückung wird übernommen) | `RET` | A |
 | Zeichen links vom Cursor löschen (am Zeilenanfang: Zeilen verbinden) | `DEL` | B |
-| Ganze Zeile löschen | `CLR` | X (im Editor) |
+| Ganze Zeile löschen / ausschneiden | `CLR` | X (im Editor) |
 | Zeile duplizieren (Kopie darunter, Cursor auf der Kopie) | – | Y (im Editor) |
-| Großbuchstaben und Zweitbelegung (2× tippen = Lock) | `SHFT` | L / R halten |
+| Großbuchstaben und Zweitbelegung (2× tippen = Lock) | `SHFT` | R halten (in der Konsole auch L) |
+| Code auf den Touchscreen (markieren, umbenennen …) | – | L halten / antippen (im Editor) |
+| Einfügen / rückgängig / wiederholen | – | SELECT + X / Y / A (im Editor) |
 | Menü `⋮` (rechts in der Reiterleiste): Öffnen (Dateibrowser), Speichern, Debugger, Sprite-Editor, Sound-Editor, Exit (zum Titelbild) | – | – |
 | Sprite-Editor | – | X (in der REPL-Konsole) |
 | Sound-Editor | – | Y (in der REPL-Konsole) |
@@ -58,6 +60,47 @@ Zeilennummern am linken Rand dienen nur der Orientierung (und den Fehlermeldunge
 man sie nicht. Lange Zeilen werden umbrochen. Nach einer Zeile, die mit `{` endet, rückt `RET` zwei
 Zeichen weiter ein, eine `}` auf einer sonst leeren Zeile rückt wieder aus. Bricht ein Programm mit
 einem Fehler ab, steht der Cursor beim Zurückwechseln in der Fehlerzeile.
+
+**Code auf dem Touchscreen (Refactoring):** Im Editor **L halten** tauscht die Bildschirme: Der
+Code kommt nach unten auf den Touchscreen, die Tastatur nach oben. **L kurz antippen** tauscht
+dauerhaft, bis man L noch einmal antippt (oder „Fertig“). Mit dem Stift:
+
+| Geste | Wirkung |
+|---|---|
+| Tipp auf ein Wort | Wort markieren (`$x` samt `$`) |
+| Tipp daneben | nur den Cursor setzen |
+| senkrecht ziehen | ganze Zeilen markieren (am oberen / unteren Rand wird weitergescrollt) |
+| waagrecht in einer Zeile ziehen | Text in der Zeile markieren |
+| über die Zeilennummern wischen | scrollen |
+
+Unter dem Code steht eine Leiste mit Knöpfen, je nachdem was markiert ist:
+
+* **Wort:** *Umben.* (umbenennen), *Def.* (zur Definition springen), *Verw.* (alle Verwendungen
+  als Liste, ein Tipp springt hin), *Kopie*, *Aus* (ausschneiden)
+* **Zeilen:** *Aus*, *Kopie*, *Dupl*, `«` `»` aus- / einrücken, `↑` `↓` Block verschieben
+* **Text in einer Zeile:** *Aus*, *Kopie*
+* **nichts:** *Einf.* (einfügen), *Rückg.*, *Wdh.*
+
+**Umbenennen** zeigt auf dem oberen Bildschirm alle Stellen in allen Dateien mit dem neuen Namen in
+Grün; Treffer in Strings und Kommentaren erscheinen grau und bleiben unverändert. Neuen Namen
+tippen, `RET` benennt um, `SCRN` bricht ab. Was dazugehört, ergibt sich aus der Stelle:
+
+| Wort | umbenannt wird |
+|---|---|
+| `$x` in einer Funktion | nur in dieser Funktion (Closures und `fn` darin gehören dazu) |
+| `$x` außerhalb von Funktionen | im globalen Code aller Dateien, auch in `"…$x…"` |
+| Funktion / Konstante | Deklaration und alle Aufrufe |
+| Klasse, Interface, Trait, Enum | Deklaration, `new`, `extends`, Typen, `X::`, `catch` … |
+| Methode, Eigenschaft, Konstante, Enum-Fall | Deklaration und alle `->name` / `::name` |
+
+Methoden und Eigenschaften werden nur am Namen erkannt: Gibt es den Namen in zwei Klassen, werden
+beide umbenannt. Eingebaute Funktionen und Klassen lassen sich nicht umbenennen.
+
+Die markierten Zeilen bleiben nach dem Zurücktauschen erhalten: **X** schneidet sie aus, **Y**
+dupliziert sie. Ohne Markierung schneidet X die aktuelle Zeile aus (sie landet in der
+Zwischenablage). **SELECT+X** fügt ein, **SELECT+Y** macht rückgängig, **SELECT+A** wiederholt (die
+letzten 20 Änderungen, ein Umbenennen über mehrere Dateien zählt als eine). Im Editor ist dafür
+nur noch **R** die Shift-Taste.
 
 **Autovervollständigung:** Beim Tippen im Editor und an der REPL erscheinen über der Tastatur
 antippbare Vorschläge, darunter die Signatur des ersten (bei eingebauten Funktionen aus der Hilfe,

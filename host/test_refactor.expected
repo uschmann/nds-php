@@ -1,0 +1,55 @@
+global $total          var total def 0:3:1 | 0:3:1 0:5:30(txt) 0:10:1 0:11:14 0:12:11(txt) 0:13:21 0:15:4(txt)
+local $total           var total def 0:5:3 | 0:5:3 0:5:30(txt) 0:6:10 0:12:11(txt) 0:15:4(txt)
+param $a               var a def 0:4:14 | 0:4:14 0:5:12
+fn $x                  var x def 0:13:9 | 0:13:9 0:13:16
+function add           name add def 0:4:9 | 0:4:9* 0:10:9 0:12:6(txt) 0:14:3(txt)
+const LIMIT            name LIMIT def 0:2:6 | 0:2:6* 0:9:14
+class Player           class Player def 1:5:6 | 0:8:9 0:15:39 1:5:6* 1:11:23 1:11:39
+method addPoints       member addPoints def 1:10:18 | 0:9:4 1:10:18*
+prop score             member score def 1:7:63 | 0:10:17 1:7:63* 1:10:51
+promoted name          member name def 1:7:45 | 0:11:25 1:3:57 1:7:45*
+static count           member count def 1:6:21 | 0:15:48 1:6:21* 1:8:11
+enum case              member Hearts def 1:2:7 | 0:15:24 1:2:7* 1:3:49
+enum Suit              class Suit def 1:1:5 | 0:15:18 1:1:5*
+builtin strlen         none strlen |
+keyword echo           none  |
+string word            none  |
+$this                  none this |
+word 1 2-8 | 1 2-8 | 0 | 1 2-8
+rename global $total -> sum: 4
+rename Player -> Gamer: 5
+rename score -> points: 3
+rename add -> 1x: -1 invalid name
+rename add -> echo: -1 echo is a keyword
+rename add -> plus: 2
+current file 0
+--- main.php
+ 1 require 'lib';
+ 2 const LIMIT = 3;
+ 3 $sum = 0;
+ 4 function plus($a, $b) {
+ 5   $total = $a + $b; // local $total
+ 6   return $total;
+ 7 }
+ 8 $p = new Gamer('Ann', 5);
+ 9 $p->addPoints(LIMIT);
+10 $sum = plus($p->points, 1);
+11 echo "Total: $sum {$p->name}";
+12 echo 'add $total';
+13 $f = fn($x) => $x + $sum;
+14 /* add
+15    $total */ echo Suit::Hearts->value, Gamer::$count;
+16 echo strlen('x');
+--- lib.php
+ 1 enum Suit: string {
+ 2   case Hearts = 'H';
+ 3   public function label(): string { return self::Hearts->name; }
+ 4 }
+ 5 class Gamer {
+ 6   public static int $count = 0;
+ 7   public function __construct(public string $name, public int $points = 0) {
+ 8     self::$count++;
+ 9   }
+10   public function addPoints(int $n): void { $this->points += $n; }
+11   public function best(Gamer $other): Gamer { return $this; }
+12 }
