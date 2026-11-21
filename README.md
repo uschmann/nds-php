@@ -43,10 +43,12 @@ zwischen beiden.
 | Zeilenanfang / -ende, seitenweise blättern | – | L/R + ←→, L/R + ↑↓ |
 | Neue Zeile (Einrückung wird übernommen) | `RET` | A |
 | Zeichen links vom Cursor löschen (am Zeilenanfang: Zeilen verbinden) | `DEL` | B |
-| Ganze Zeile löschen | `CLR` | – |
+| Ganze Zeile löschen | `CLR` | X (im Editor) |
+| Zeile duplizieren (Kopie darunter, Cursor auf der Kopie) | – | Y (im Editor) |
 | Großbuchstaben und Zweitbelegung (2× tippen = Lock) | `SHFT` | L / R halten |
-| Sprite-Editor | – | X |
-| Sound-Editor | – | Y |
+| Menü `⋮` (rechts in der Reiterleiste): Sprite-Editor, Sound-Editor, Debugger, Speichern | – | – |
+| Sprite-Editor | – | X (in der REPL-Konsole) |
+| Sound-Editor | – | Y (in der REPL-Konsole) |
 
 Die Tastatur tippt Kleinbuchstaben; mit Shift kommen Großbuchstaben und die für PHP nötigen Zeichen
 `\ { } [ ] | : *` (jeweils oben links auf der Taste).
@@ -380,14 +382,14 @@ sproff([o])               Objekt o ausblenden, ohne Angabe alle
 sprhit(a, b)              true, wenn sich die sichtbaren Objekte a und b überlappen
 stamp(n, x, y[, s])       Bild n in die Grafikebene stempeln (s = 1-8), z. B. für Hintergründe
 sprset(n, x, y, c)        einzelnen Punkt (x,y 0-7) eines Bildes setzen, c = -1 = transparent
-SPRED [n]                 Sprite-Editor öffnen (REPL-Befehl, sonst Taste X)
+SPRED [n]                 Sprite-Editor öffnen (REPL-Befehl, sonst Menü ⋮ oder X in der Konsole)
 ```
 
 Sprites sind nur auf dem Ausgabebildschirm sichtbar und dürfen teilweise außerhalb des
 Bildschirms liegen. `RUN` und `NEW` blenden alle Objekte aus. Ändert man ein Bild (Editor oder
 `sprset()`), aktualisieren sich alle Objekte, die es benutzen.
 
-**Sprite-Editor** (Taste X oder `SPRED n`): unten ein 8×8-Raster zum Malen mit dem Stylus,
+**Sprite-Editor** (Menü ⋮, X in der REPL-Konsole oder `SPRED n`): unten ein 8×8-Raster zum Malen mit dem Stylus,
 Farbpalette (Karo = transparent), Vorschau in 4×/2×/1×, Knöpfe für Slot wechseln, Kopieren,
 Einfügen, Leeren und OK. Oben steht eine Übersicht aller 256 Slots; der aktuelle ist gelb
 umrahmt. Steuerkreuz wechselt den Slot (←→ ±1, ↑↓ ±16), B/X/OK schließt den Editor.
@@ -401,10 +403,10 @@ Klang (Rechteck 12,5 %, 25 %, 50 % oder Rauschen) und Tempo.
 sound(n)          Slot n im Hintergrund abspielen, das Programm läuft weiter
 sound(n, true)    Slot n abspielen und warten, bis er fertig ist
 sound(-1)         Wiedergabe stoppen
-SNDED [n]         Sound-Editor öffnen (REPL-Befehl, sonst Taste Y)
+SNDED [n]         Sound-Editor öffnen (REPL-Befehl, sonst Menü ⋮ oder Y in der Konsole)
 ```
 
-**Sound-Editor** (Taste Y oder `SNDED n`): unten eine Klaviatur über zwei Oktaven. Ein Tipp
+**Sound-Editor** (Menü ⋮, Y in der REPL-Konsole oder `SNDED n`): unten eine Klaviatur über zwei Oktaven. Ein Tipp
 auf eine Taste spielt den Ton und hängt ihn mit der gewählten Länge (1/16 bis 1/1) an die
 Melodie an. Weitere Knöpfe: Pause (`REST`), letzte Note löschen (`DEL`), Slot leeren (`CLR`),
 Klang, Tempo, Oktave, Slot wechseln, `PLAY`/`STOP` und `OK`. Oben stehen die Noten des
@@ -487,7 +489,7 @@ nach.
 
 ### Debugger
 
-Ein Tipp auf `DBG` rechts in der Reiterleiste ersetzt die Tastatur durch den Debugger. Er zeigt den
+Im Menü `⋮` rechts in der Reiterleiste ersetzt `Debugger` die Tastatur durch den Debugger. Er zeigt den
 Code der Datei; ein Tipp auf eine Zeile setzt oder löscht dort einen Haltepunkt (roter Punkt, im
 Editor rote Zeilennummer). Läuft das Programm auf einen Haltepunkt, hält es vor dieser Zeile an:
 unten ist die Zeile markiert, oben stehen die Variablen – erst die lokalen der laufenden Funktion

@@ -42,10 +42,12 @@ The top screen is either the **code editor** or the **REPL console**; `SCRN` swi
 | Line start / end, page up / down | – | L/R + ←→, L/R + ↑↓ |
 | New line (keeps the indentation) | `RET` | A |
 | Delete left of the cursor (at the line start: join lines) | `DEL` | B |
-| Delete the whole line | `CLR` | – |
+| Delete the whole line | `CLR` | X (in the editor) |
+| Duplicate the line (copy below, cursor on the copy) | – | Y (in the editor) |
 | Capitals and second symbols (tap twice = lock) | `SHFT` | hold L / R |
-| Sprite editor | – | X |
-| Sound editor | – | Y |
+| Menu `⋮` (right of the tab bar): sprite editor, sound editor, debugger, save | – | – |
+| Sprite editor | – | X (in the REPL console) |
+| Sound editor | – | Y (in the REPL console) |
 
 The keyboard types lower case; shift gives capitals and the characters PHP needs,
 `\ { } [ ] | : *` (shown at the top left of each key).
@@ -371,13 +373,13 @@ sproff([o])               hide object o, all objects without an argument
 sprhit(a, b)              true if the visible objects a and b overlap
 stamp(n, x, y[, s])       stamp image n into the graphics layer (s = 1-8), e.g. for backgrounds
 sprset(n, x, y, c)        set a single pixel (x,y 0-7) of an image, c = -1 = transparent
-SPRED [n]                 open the sprite editor (REPL command, otherwise key X)
+SPRED [n]                 open the sprite editor (REPL command, otherwise menu ⋮ or X in the console)
 ```
 
 Sprites are only visible on the output screen and may be partly off screen. `RUN` and `NEW`
 hide all objects. When an image changes (editor or `sprset()`), every object using it is updated.
 
-**Sprite editor** (key X or `SPRED n`): at the bottom an 8×8 grid to paint with the stylus,
+**Sprite editor** (menu ⋮, X in the REPL console or `SPRED n`): at the bottom an 8×8 grid to paint with the stylus,
 a colour palette (checkerboard = transparent), a preview at 4×/2×/1× and buttons to change the slot,
 copy, paste, clear and OK. The top screen shows an overview of all 256 slots; the current one
 has a yellow frame. The d-pad changes the slot (←→ ±1, ↑↓ ±16), B/X/OK closes the editor.
@@ -391,10 +393,10 @@ a sound (square wave 12.5 %, 25 %, 50 % or noise) and a tempo.
 sound(n)          play slot n in the background, the program keeps running
 sound(n, true)    play slot n and wait until it has finished
 sound(-1)         stop playback
-SNDED [n]         open the sound editor (REPL command, otherwise key Y)
+SNDED [n]         open the sound editor (REPL command, otherwise menu ⋮ or Y in the console)
 ```
 
-**Sound editor** (key Y or `SNDED n`): at the bottom a piano keyboard spanning two octaves. Tapping a
+**Sound editor** (menu ⋮, Y in the REPL console or `SNDED n`): at the bottom a piano keyboard spanning two octaves. Tapping a
 key plays the note and appends it to the tune with the selected length (1/16 to 1/1).
 More buttons: rest (`REST`), delete the last note (`DEL`), clear the slot (`CLR`),
 sound, tempo, octave, change slot, `PLAY`/`STOP` and `OK`. The top screen shows the notes of the
@@ -475,7 +477,7 @@ If the program in memory changed since the last `SAVE`/`LOAD`, `LOAD` asks befor
 
 ### Debugger
 
-Tapping `DBG` on the right of the tab bar replaces the keyboard with the debugger. It shows the code
+In the `⋮` menu on the right of the tab bar, `Debugger` replaces the keyboard with the debugger. It shows the code
 of the file; tapping a line sets or clears a breakpoint there (red dot, red line number in the
 editor). When the program reaches a breakpoint it stops before that line: the line is marked at the
 bottom and the top screen lists the variables – first the locals of the running function (with

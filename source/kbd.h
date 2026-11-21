@@ -18,7 +18,8 @@
 #define KC_TAB    0x80   /* + index: file tab tapped        */
 #define KC_TABNEW 0x9F   /* "+" tab tapped                  */
 #define KC_BROWSER 0x9E  /* "<>" tile tapped: file browser  */
-#define KC_DEBUG   0x9D  /* "DBG" tile tapped: debugger     */
+#define KC_MENU    0x9D  /* "three dots" tile tapped: menu  */
+#define KC_MENU_ITEM 0xC0 /* + index: menu entry tapped     */
 #define KC_SUGG    0xA0  /* + index: suggestion tapped      */
 #define KC_SUGG_MORE 0xBF /* "more" arrow of the suggestions */
 
@@ -31,7 +32,12 @@ void kbd_set_status(const char *line1, const char *line2);
 /* autocompletion: chips instead of the status card (n = 0: status again);
  * returns how many chips fit */
 int  kbd_set_suggestions(const char *const *labels, int n, const char *hint, bool more);
-void kbd_drop_suggestions(void);   /* forget them without drawing (another screen is shown) */
+void kbd_drop_suggestions(void);
+/* menu below the three dots: entries are returned as KC_MENU_ITEM + i;
+ * a tap anywhere else closes it */
+void kbd_open_menu(const char *const *items, int n);
+void kbd_close_menu(void);
+bool kbd_menu_open(void);   /* forget them without drawing (another screen is shown) */
 /* file tabs in the header; names without ".php" are shown */
 void kbd_set_tabs(const char *const *names, int count, int current);
 

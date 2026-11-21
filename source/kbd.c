@@ -120,7 +120,7 @@ static void layout(void) {
 static char tabNames[TAB_MAX][13] = { "main.php" };
 static int  tabCount = 1, tabCur, tabX[TAB_MAX + 1], tabW[TAB_MAX + 1], tabIdx[TAB_MAX + 1], tabShown;
 
-#define DBG_X 224
+#define MENU_TILE_X 232            /* "three dots" tile in the header */
 
 static void draw_tabs(void) {
 	fill(0, 0, 256, 22, COL_PAGE);
@@ -130,14 +130,14 @@ static void draw_tabs(void) {
 	fill(4, 18, 1, 1, COL_PAGE); fill(19, 18, 1, 1, COL_PAGE);
 	glyph(5, 7, '<', C(31, 31, 31), 1);
 	glyph(11, 7, '>', C(31, 31, 31), 1);
-	/* "DBG" tile on the right: debugger */
-	fill(DBG_X, 3, 28, 16, COL_KEY_FN);
-	fill(DBG_X, 3, 1, 1, COL_PAGE); fill(DBG_X + 27, 3, 1, 1, COL_PAGE);
-	fill(DBG_X, 18, 1, 1, COL_PAGE); fill(DBG_X + 27, 18, 1, 1, COL_PAGE);
-	text(DBG_X + 2, 7, "DBG", COL_ACCENT, 1);
+	/* "three dots" tile on the right: menu */
+	fill(MENU_TILE_X, 3, 20, 16, COL_KEY_FN);
+	fill(MENU_TILE_X, 3, 1, 1, COL_PAGE); fill(MENU_TILE_X + 19, 3, 1, 1, COL_PAGE);
+	fill(MENU_TILE_X, 18, 1, 1, COL_PAGE); fill(MENU_TILE_X + 19, 18, 1, 1, COL_PAGE);
+	for (int d = 0; d < 3; d++) fill(MENU_TILE_X + 9, 5 + d * 4, 2, 2, COL_TEXT);
 	fill(0, 21, 256, 1, COL_LINE);
 
-	const int x0 = 24, plusW = 18, maxX = DBG_X - 4 - plusW;
+	const int x0 = 24, plusW = 18, maxX = MENU_TILE_X - 4 - plusW;
 	int w[TAB_MAX];
 	for (int i = 0; i < tabCount; i++) {
 		int l = 0;
@@ -184,7 +184,7 @@ void kbd_set_tabs(const char *const *names, int count, int current) {
 static int hit_tab(int px, int py) {
 	if (py >= 22) return KC_NONE;
 	if (px < 22) return KC_BROWSER;
-	if (px >= DBG_X - 2) return KC_DEBUG;
+	if (px >= MENU_TILE_X - 2) return KC_MENU;
 	for (int i = 0; i <= tabShown; i++)
 		if (px >= tabX[i] && px < tabX[i] + tabW[i]) return tabIdx[i] < 0 ? KC_TABNEW : KC_TAB + tabIdx[i];
 	return KC_NONE;
@@ -209,8 +209,51 @@ static bool suggMore;
 #define SUGG_H 13
 
 
+/* menu below the three dots */
+#define MENU_MAX 8
+#define MENU_W   124
+#define MENU_X   (252 - MENU_W)
+#define MENU_Y   21
+#define ITEM_H   20
+static const char *menuItems[MENU_MAX];
+static int  menuN;
+static bool menuOpen;
+
+static void draw_menu(void) {
+	int h = menuN * ITEM_H + 4;
+	fill(MENU_X + 2, MENU_Y + 3, MENU_W, h, C(22, 22, 21));        /* shadow */
+	fill(MENU_X, MENU_Y, MENU_W, h, COL_LINE);
+	fill(MENU_X + 1, MENU_Y + 1, MENU_W - 2, h - 2, COL_CARD);
+	fill(MENU_X + 1, MENU_Y + 1, 3, h - 2, COL_ACCENT);
+	for (int i = 0; i < menuN; i++) {
+		int y = MENU_Y + 2 + i * ITEM_H;
+		if (i) fill(MENU_X + 8, y, MENU_W - 12, 1, COL_LINE);
+		text(MENU_X + 12, y + 6, menuItems[i], COL_TEXT, 1);
+	}
+}
+
+static void draw_frame(void);
+static void draw_status(void);
+static void draw_all_keys(void);
+
+void kbd_open_menu(const char *const *items, int n) {
+	menuN = n < MENU_MAX ? n : MENU_MAX;
+	for (int i = 0; i < menuN; i++) menuItems[i] = items[i];
+	menuOpen = true;
+	draw_menu();
+}
+
+void kbd_close_menu(void) {
+	if (!menuOpen) return;
+	menuOpen = false;
+	kbd_redraw();
+}
+
+bool kbd_menu_open(void) { return menuOpen; }
+
 /* status card with a red accent bar, or the suggestion chips */
 static void draw_status(void) {
+	if (menuOpen) return;                     /* drawn again when the menu closes */
 	fill(4, 26, 248, 30, COL_LINE);
 	fill(5, 27, 246, 28, COL_CARD);
 	fill(4, 26, 1, 1, COL_PAGE); fill(251, 26, 1, 1, COL_PAGE);
@@ -346,6 +389,17 @@ int kbd_poll(bool touching, int px, int py, bool extShift) {
 		if (!shiftLock) set_shift(extShift);
 	}
 	int result = KC_NONE;
+	if (menuOpen) {
+		/* menu: a tap picks an entry or closes it */
+		if (touching && pressed == -1) {
+			pressed = -2;
+			if (px >= MENU_X && px < MENU_X + MENU_W && py >= MENU_Y + 2 && py < MENU_Y + 2 + menuN * ITEM_H)
+				result = KC_MENU_ITEM + (py - MENU_Y - 2) / ITEM_H;
+			kbd_close_menu();
+			pressed = -2;
+		} else if (!touching) pressed = -1;
+		return result;
+	}
 	if (touching) {
 		int k = hit(px, py);
 		if (pressed == -1) {

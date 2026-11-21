@@ -540,6 +540,19 @@ static void ed_delete_line(void) {
 	set_status(msg, GREEN);
 }
 
+/* Y: copy the line below itself, the cursor moves to the copy */
+static void ed_duplicate_line(void) {
+	char buf[BASIC_LINE_MAX + 1], msg[40];
+	if (!basic_line_count()) return;
+	if (basic_line_count() >= BASIC_MAX_LINES) { ed_full(); return; }
+	snprintf(buf, sizeof buf, "%s", basic_line_text(curLine));
+	if (!basic_insert_line(curLine + 1, buf)) return;
+	curLine++;
+	ed_clamp();
+	snprintf(msg, sizeof msg, L("ZEILE %d DUPLIZIERT", "LINE %d DUPLICATED"), curLine);
+	set_status(msg, GREEN);
+}
+
 static void ed_key(int k, bool shifted) {
 	switch (k) {
 	case KC_LEFT:  if (shifted) ed_home(); else ed_left(); break;
@@ -1311,6 +1324,25 @@ static void debugger_frame(u32 down, u32 rep, bool touching, int px, int py) {
 	if (dbgOpen) dbgp_update();
 }
 
+/* entries of the "three dots" menu */
+static void menu_action(int item) {
+	BasicState st = basic_state();
+	if (item == 2) { open_debugger(); return; }
+	if (st != BASIC_IDLE) { set_status(L("ERST DAS PROGRAMM BEENDEN", "STOP THE PROGRAM FIRST"), RED); return; }
+	helpOpen = false;
+	if (item == 0) open_sprite_editor(spred_slot());
+	else if (item == 1) open_sound_editor(snded_slot());
+	else if (item == 3) {
+		/* save under the last name, or ask for one in the REPL */
+		if (basic_program_name()[0]) exec_line("SAVE");
+		else {
+			view = VIEW_OUTPUT;
+			if (!replActive) repl_prompt();
+			input_set("SAVE \"");
+		}
+	}
+}
+
 static void video_init(void) {
 	videoSetMode(MODE_5_2D);
 	vramSetBankA(VRAM_A_MAIN_BG);
@@ -1497,8 +1529,12 @@ int main(int argc, char *argv[]) {
 			} else if (k >= KC_TAB && k < KC_TAB + BASIC_PROJECT_FILES) {
 				/* file tab: open that file in the editor */
 				if (st == BASIC_IDLE) { select_file(k - KC_TAB); view = VIEW_EDIT; }
-			} else if (k == KC_DEBUG) {
-				open_debugger();
+			} else if (k == KC_MENU) {
+				const char *items[4] = { L("Sprite-Editor", "Sprite editor"), L("Sound-Editor", "Sound editor"),
+				                         "Debugger", L("Speichern", "Save") };
+				kbd_open_menu(items, 4);
+			} else if (k >= KC_MENU_ITEM && k < KC_MENU_ITEM + 4) {
+				menu_action(k - KC_MENU_ITEM);
 			} else if (k == KC_BROWSER) {
 			if (st == BASIC_IDLE) { helpOpen = false; open_browser(); }
 		} else if (k == KC_TABNEW) {
@@ -1519,9 +1555,9 @@ int main(int argc, char *argv[]) {
 				} else if (k == KC_RET) {
 					keyq_push(13);
 				}
-			} else if (down & KEY_Y) {
+			} else if ((down & KEY_Y) && view != VIEW_EDIT) {
 				open_sound_editor(snded_slot());
-			} else if (down & KEY_X) {
+			} else if ((down & KEY_X) && view != VIEW_EDIT) {
 				open_sprite_editor(spred_slot());
 			} else if (view == VIEW_OUTPUT) {
 				/* REPL console */
@@ -1531,8 +1567,10 @@ int main(int argc, char *argv[]) {
 				else if (k == KC_DOWN) repl_history(1);
 				else if (k && input_key(k)) repl_submit();
 			} else {
-				/* code editor */
-				if (k == KC_RUN) run_program();
+				/* code editor: Y duplicates the line, X deletes it */
+				if (down & KEY_Y) { ed_duplicate_line(); ed_scroll(); }
+				else if (down & KEY_X) { ed_delete_line(); ed_scroll(); }
+				else if (k == KC_RUN) run_program();
 				else if (k == KC_SCRN) view = VIEW_OUTPUT;
 				else if (k) ed_key(k, shoulder);
 			}
