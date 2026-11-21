@@ -98,6 +98,13 @@ test-dbg: basic
 	rm -f test.out
 
 # match, enums, named arguments
+test-types: basic
+	(cat test_types.txt; echo RUN; echo 'function v(): void { return 1; }'; echo 'function w(): int { return; }'; \
+	 echo 'function d(int $$x = "a") {}'; echo 'function e(void $$x) {}'; echo 'echo add(1, []);'; \
+	 echo NEW; cat test_types2.txt; echo RUN) | ./basic > test.out
+	diff -u test_types.expected test.out && echo "types test passed"
+	rm -f test.out
+
 test-modern: basic
 	(cat test_modern.txt; echo RUN; echo 'new Suit();'; echo '$$s->name = "x";'; echo 'echo Dir::from(1);'; \
 	 echo 'echo Suit::Clubs;'; echo '$$x = clone Suit::Hearts;'; echo 'echo match(3) { 1, 2 => "a" };'; \

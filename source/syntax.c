@@ -19,7 +19,7 @@ static bool is_keyword(const char *w, int n) {
 		"require", "require_once", "include", "include_once", "class", "interface", "trait",
 		"extends", "implements", "new", "clone", "instanceof", "public", "protected", "private",
 		"static", "abstract", "final", "const", "use", "self", "parent", "readonly",
-		"try", "catch", "finally", "throw", "match", "enum", "fn", NULL
+		"try", "catch", "finally", "throw", "match", "enum", "fn", "declare", NULL
 	};
 	for (int i = 0; kw[i]; i++)
 		if ((int)strlen(kw[i]) == n && !strncasecmp(kw[i], w, n)) return true;
@@ -30,7 +30,8 @@ static bool ident_ch(char c) { return isalnum((unsigned char)c) || c == '_'; }
 
 static bool is_type_name(const char *w, int n) {
 	static const char *const ty[] = { "int", "float", "string", "bool", "array", "void", "mixed",
-	                                  "callable", "iterable", "object", "never", NULL };
+	                                  "callable", "iterable", "object", "never", "null", "false", "true",
+	                                  "self", "static", NULL };
 	for (int i = 0; ty[i]; i++)
 		if ((int)strlen(ty[i]) == n && !strncasecmp(ty[i], w, n)) return true;
 	return false;
@@ -47,6 +48,12 @@ static unsigned char word_color(const char *t, int l, int i, int j) {
 	bool beforeColons = k + 1 < l && t[k] == ':' && t[k + 1] == ':';
 	bool call = k < l && t[k] == '(';
 	if (afterColons) return call ? TEXTCOL : BLUE;            /* Suit::Hearts, X::CONST */
+	/* types: "int $x", "?int", "int|string", "array $a", ": ?self" */
+	if (!call && is_type_name(t + i, n) &&
+	    ((k < l && (t[k] == '$' || (t[k] == '|' && t[k + 1] != '|'))) ||
+	     (i > 0 && t[i - 1] == '?' && (i < 2 || t[i - 2] != '?')) ||
+	     (p >= 0 && t[p] == '|' && (p == 0 || t[p - 1] != '|'))))
+		return CYAN;
 	if (is_keyword(t + i, n)) return RED;
 	/* name: value in a call (not "a ? b : c", not "::") */
 	if (k < l && t[k] == ':' && !beforeColons && p >= 0 && (t[p] == '(' || t[p] == ',')) return BROWN;
@@ -65,7 +72,6 @@ static unsigned char word_color(const char *t, int l, int i, int j) {
 	}
 	if (upper && !lower && n > 1) return BLUE;                /* PHP_EOL, JOY_A */
 	if (isupper((unsigned char)t[i]) && lower && !call) return CYAN;   /* Exception, Suit */
-	if (is_type_name(t + i, n) && k < l && t[k] == '$') return CYAN;   /* int $x */
 	return TEXTCOL;
 }
 

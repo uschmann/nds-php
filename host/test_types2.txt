@@ -1,0 +1,9 @@
+10 declare(strict_types=1);
+20 function add(int $a, int $b): int { return $a + $b; }
+30 function f(float $x): float { return $x; }
+40 var_dump(f(2));
+50 try { add("2", 3); } catch (TypeError $e) { echo $e->getMessage(), PHP_EOL; }
+60 function r(): string { return 5; }
+70 try { r(); } catch (TypeError $e) { echo $e->getMessage(), PHP_EOL; }
+80 function n(): ?int { if (false) return 1; }
+90 try { n(); } catch (TypeError $e) { echo $e->getMessage(), PHP_EOL; }

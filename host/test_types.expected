@@ -1,0 +1,49 @@
+5 2
+float(1.5)
+Hi you Hi Ana
+integer string integer
+void ok
+int(0)
+int(5)
+3 Punkt float Closure
+TypeError: add(): Argument #1 ($a) must be of type int, string given
+bad(): Return value must be of type int, string returned
+Cannot assign string to property Punkt::$x of type int
+int(10)
+float(5)
+Cannot modify readonly property Konto::$iban
+Cannot modify readonly property Konto::$iban
+Typed property Konto::$count must not be accessed before initialization
+bool(false)
+string(4) "leer"
+int(4)
+Konto Object
+(
+    [stand] => 0
+    [iban] => DE2
+)
+object(Konto)#12 (3) {
+  ["stand"]=>
+  float(0)
+  ["iban"]=>
+  string(3) "DE3"
+  ["count"]=>
+  uninitialized(int)
+}
+{"stand":0.0,"iban":"DE4"}
+***
+{closure}(): Argument #1 ($n) must be of type int, array given
+greet(): Argument #1 ($name) must be of type ?string, Punkt given
+40
+needsPunkt(): Argument #1 ($p) must be of type Punkt, Konto given
+Cannot modify readonly property Punkt::$name
+null
+Parse error: A void function must not return a value
+Parse error: A function with return type must return a value
+Parse error: Cannot use string as default value for parameter $x of type int
+Parse error: void cannot be used as a parameter type
+Error in line 1: Uncaught TypeError: add(): Argument #2 ($b) must be of type int, array given
+float(2)
+add(): Argument #1 ($a) must be of type int, string given
+r(): Return value must be of type string, int returned
+n(): Return value must be of type ?int, none returned

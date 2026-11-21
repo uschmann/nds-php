@@ -140,7 +140,9 @@ static const char *const keywords[] = {
 	"require", "require_once", "include", "include_once", "class", "interface", "trait",
 	"extends", "implements", "new", "clone", "instanceof", "public", "protected", "private",
 	"static", "abstract", "final", "const", "use", "self", "parent", "readonly",
-	"try", "catch", "finally", "throw", "match", "enum", "fn", NULL
+	"try", "catch", "finally", "throw", "match", "enum", "fn", "declare", "strict_types",
+	"int", "float", "string", "bool", "mixed", "void", "never", "callable", "iterable", "object",
+	NULL
 };
 
 static const char *const builtinClasses[] = {

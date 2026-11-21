@@ -1,0 +1,48 @@
+10 function add(int $a, int $b): int { return $a + $b; }
+20 function half(float $x): float { return $x / 2; }
+30 function greet(?string $name = null): string { return "Hi " . ($name ?? "you"); }
+40 function idOf(int|string $v): string { return gettype($v); }
+50 function nothing(): void { echo "void ok", PHP_EOL; }
+60 function bad(): int { return "abc"; }
+70 class Punkt {
+80   public function __construct(public int $x = 0, public int $y = 0, public readonly ?string $name = null) {}
+90   public function moved(int $dx): static { return new Punkt($this->x + $dx, $this->y, $this->name); }
+100 }
+110 class Konto {
+120   public float $stand = 0;
+130   public readonly string $iban;
+140   public int $count;
+150   public function __construct(string $iban) { $this->iban = $iban; }
+160   public function setIban(string $i): void { $this->iban = $i; }
+170 }
+180 echo add(2, "3"), " ", add(1.0, true), PHP_EOL;
+190 var_dump(half(3));
+200 echo greet(), " ", greet("Ana"), PHP_EOL;
+210 echo idOf(5), " ", idOf("x"), " ", idOf(2.0), PHP_EOL;
+220 nothing();
+230 $p = new Punkt(y: "5");
+240 var_dump($p->x, $p->y);
+250 $q = $p->moved(3);
+260 echo $q->x, " ", get_debug_type($q), " ", get_debug_type(1.5), " ", get_debug_type(fn() => 1), PHP_EOL;
+270 try { add("abc", 1); } catch (TypeError $e) { echo get_class($e), ": ", $e->getMessage(), PHP_EOL; }
+280 try { bad(); } catch (TypeError $e) { echo $e->getMessage(), PHP_EOL; }
+290 try { $p->x = "zehn"; } catch (TypeError $e) { echo $e->getMessage(), PHP_EOL; }
+300 $p->x = "10"; var_dump($p->x);
+310 $k = new Konto("DE1");
+320 $k->stand = 5; var_dump($k->stand);
+330 try { $k->iban = "X"; } catch (Error $e) { echo $e->getMessage(), PHP_EOL; }
+340 try { $k->setIban("X"); } catch (Error $e) { echo $e->getMessage(), PHP_EOL; }
+350 try { echo $k->count; } catch (Error $e) { echo $e->getMessage(), PHP_EOL; }
+360 var_dump(isset($k->count), $k->count ?? "leer");
+370 $k->count = 1; $k->count++; $k->count += 2; var_dump($k->count);
+380 print_r(new Konto("DE2")); var_dump(new Konto("DE3"));
+390 echo json_encode(new Konto("DE4")), PHP_EOL;
+400 $f = fn(int $n): string => str_repeat("*", $n);
+410 echo $f("3"), PHP_EOL;
+420 try { $f([]); } catch (TypeError $e) { echo $e->getMessage(), PHP_EOL; }
+430 try { greet(new Punkt()); } catch (TypeError $e) { echo $e->getMessage(), PHP_EOL; }
+440 function needsPunkt(Punkt $p, callable $cb, iterable $it = []): mixed { return $cb($p->x); }
+450 echo needsPunkt(new Punkt(4), fn($v) => $v * 10), PHP_EOL;
+460 try { needsPunkt($k, "strlen"); } catch (TypeError $e) { echo $e->getMessage(), PHP_EOL; }
+470 try { $p->name = "neu"; } catch (Error $e) { echo $e->getMessage(), PHP_EOL; }
+480 echo $p->name ?? "null", PHP_EOL;

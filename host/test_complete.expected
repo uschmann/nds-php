@@ -1,4 +1,4 @@
-[st] word=2: strangeHelper static stamp str_contains str_ends_with str_pad str_repeat str_replace str_starts_with strcasecmp  | strangeHelper($a, $b) -> "strangeHelper(" back 0
+[st] word=2: strangeHelper static strict_types string stamp str_contains str_ends_with str_pad str_repeat str_replace  | strangeHelper($a, $b) -> "strangeHelper(" back 0
 [echo str_p] word=5: str_pad STR_PAD_BOTH STR_PAD_LEFT STR_PAD_RIGHT  | str_pad($s,n,c) -> "str_pad(" back 0
 [$pl] word=2: playerCount players  |  -> "playerCount" back 0
 [$p->] word=0: __construct addPoints color name score  | __construct(public int $score  -> "__construct(" back 0
@@ -20,4 +20,4 @@
 [cl] word=2: class{} class clone class_exists cls  | class  { -> "class  {" back 2
 [co] word=2: __construct() const continue color cos count  | public function __construct(public  -> "public function __construct(public $) {}" back 4
 [pf] word=2: public function  | public function () { -> "public function () {" back 4
-[st] word=2: strtoupper strangeHelper static stamp str_contains str_ends_with str_pad str_repeat str_replace str_starts_with  | strtoupper(1) -> "strtoupper(" back 0
+[st] word=2: strtoupper strangeHelper static strict_types string stamp str_contains str_ends_with str_pad str_repeat  | strtoupper(1) -> "strtoupper(" back 0

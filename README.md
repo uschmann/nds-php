@@ -123,7 +123,7 @@ Unterstützt werden:
 * **Funktionen:** `strlen substr strpos str_repeat str_pad str_replace strcmp strcasecmp str_contains str_starts_with
   str_ends_with strtoupper strtolower ucfirst lcfirst trim ltrim rtrim strrev explode implode sprintf
   printf vsprintf vprintf number_format chr ord intval floatval strval boolval is_numeric is_int is_float is_string
-  is_bool is_array is_null gettype abs floor ceil round sqrt pow sin cos tan asin acos atan atan2
+  is_bool is_array is_null gettype get_debug_type abs floor ceil round sqrt pow sin cos tan asin acos atan atan2
   exp log log10 pi fmod intdiv deg2rad rad2deg min max rand mt_rand srand count in_array
   array_search array_key_exists array_keys array_values array_sum array_reverse array_slice
   array_merge array_fill range array_push array_pop array_shift array_unshift sort rsort shuffle
@@ -134,7 +134,7 @@ Unterstützt werden:
 * **Closures und Arrow Functions** (`function () use ($x) { … }`, `fn ($x) => …`) – siehe unten
 * **Klassen, Interfaces und Traits** – siehe unten
 * **Exceptions** (`try`/`catch`/`finally`, `throw`) – siehe unten
-* **PHP 8:** `match`, `enum` und Named Arguments – siehe unten
+* **PHP 8:** `match`, `enum`, Named Arguments, Typangaben und `readonly` – siehe unten
 
 Nicht dabei sind u. a. Referenzen (`&`), statische Variablen in Funktionen und
 Namespaces (ein führendes `\` wie in `\Exception` ist erlaubt). Schlüsselwörter und Funktionsnamen sind wie in PHP unabhängig von Groß-/Kleinschreibung,
@@ -176,8 +176,8 @@ var_dump($c instanceof Shape);              // bool(true)
 * **Klassen:** `class`, `extends`, `implements`, `abstract`, `final`, Eigenschaften mit
   Standardwert (auch Arrays), Methoden, `const`, `static` Eigenschaften und Methoden,
   Sichtbarkeit `public`/`protected`/`private` (wird geprüft), Konstruktor `__construct()` mit
-  Promotion (`public function __construct(private int $x)`), Typangaben werden akzeptiert und
-  ignoriert
+  Promotion (`public function __construct(private int $x)`), Typangaben werden geprüft –
+  siehe „Typen“
 * **Objekte:** `new A(…)`, `new static`/`new self`, `$this`, `$o->x`, `$o->f()`, Ketten wie
   `$this->items[] = $x` oder `(new A)->f()->g()`, `$o->$name`, `A::X`, `A::$n`, `A::f()`,
   `self::`, `parent::`, `static::` (späte statische Bindung), `A::class`, `instanceof`, `clone`,
@@ -233,6 +233,42 @@ function karte(string $farbe = 'H', int $wert = 1, bool $bild = false) { ... }
 karte(wert: 12, bild: true);
 $p = new Punkt(y: 5);
 ```
+
+### Typen
+
+Typangaben werden wie in PHP 8 zur Laufzeit geprüft: bei Parametern, Rückgabewerten und
+Eigenschaften. Erlaubt sind `int`, `float`, `string`, `bool`, `array`, `callable`, `iterable`,
+`object`, `mixed`, `null`, `false`, `true`, Klassen- und Interface-Namen, `self`/`static`/`parent`,
+nullable (`?int`) und Union-Typen (`int|string|null`), bei Rückgaben auch `void` und `never`.
+
+```php
+function plus(int $a, int $b): int { return $a + $b; }
+echo plus(2, "3");                     // 5: "3" wird zu 3
+plus("abc", 1);                        // TypeError: plus(): Argument #1 ($a) must be of type int, string given
+
+class Punkt {
+  public function __construct(public int $x = 0, public readonly ?string $name = null) {}
+}
+$p = new Punkt(x: "5");                 // $p->x ist int(5)
+$p->x = "zehn";                         // TypeError: Cannot assign string to property Punkt::$x of type int
+$p->name = "neu";                       // Error: Cannot modify readonly property Punkt::$name
+```
+
+* **Umwandlung:** Ohne Weiteres wandelt PHP passende Skalare um (`"5"` → `5`, `5` → `"5"`,
+  `1` → `true`). Mit `declare(strict_types=1);` muss der Typ genau passen, nur `int` wird noch zu
+  `float`. Hier gilt die Angabe für das ganze Programm, nicht nur für die eine Datei.
+* **Eigenschaften:** `public int $n = 0;` prüft jede Zuweisung. Eine typisierte Eigenschaft ohne
+  Standardwert ist zunächst nicht initialisiert. Lesen gibt dann einen Fehler, `isset()` und `??`
+  liefern `false` bzw. den Ersatzwert.
+* **`readonly`:** Die Eigenschaft wird einmal innerhalb der Klasse gesetzt (meist im Konstruktor)
+  und ist danach nur lesbar. `readonly class` macht alle Eigenschaften `readonly`. Promotion im
+  Konstruktor übernimmt Typ und `readonly`.
+* **Fehler:** Falsche Typen werfen einen `TypeError`, den man mit `catch` fangen kann. Fehler, die
+  sich schon beim Übersetzen erkennen lassen, kommen als Parse-Fehler, z. B. `return 1;` in einer
+  `void`-Funktion oder ein falscher Standardwert.
+* **Hilfsfunktionen:** `gettype()` und `get_debug_type()` (`int`, `float`, `Punkt`, `Closure` …).
+* **Nicht dabei:** Intersection-Typen (`A&B`), Typprüfung bei eingebauten Funktionen und bei
+  statischen Eigenschaften, der Vergleich der Signaturen beim Überschreiben von Methoden.
 
 ### Exceptions
 

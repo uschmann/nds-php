@@ -97,9 +97,10 @@ static void fail(const char *fmt, ...) __attribute__((noreturn, format(printf, 1
 /* values                                                              */
 /* ------------------------------------------------------------------ */
 
-enum { T_NULL = 0, T_BOOL, T_INT, T_FLOAT, T_STR, T_ARR, T_APPEND, T_OBJ, T_PNAME, T_CLO };
+enum { T_NULL = 0, T_BOOL, T_INT, T_FLOAT, T_STR, T_ARR, T_APPEND, T_OBJ, T_PNAME, T_CLO, T_UNSET };
 /* T_PNAME: property name on the stack (path element of $a->b)
- * T_CLO: closure (function or fn) with its captured variables */
+ * T_CLO: closure (function or fn) with its captured variables
+ * T_UNSET: typed property that has not been initialized yet */
 
 typedef struct Str { int rc, len; char s[1]; } Str;
 typedef struct Arr Arr;
@@ -317,7 +318,8 @@ static void separate(Value *v) {
 enum { K_CLASS, K_INTERFACE, K_TRAIT };
 enum { VIS_PUBLIC, VIS_PROTECTED, VIS_PRIVATE };
 
-typedef struct { char name[NAME_MAX_LEN + 1]; Value val; unsigned char vis, isStatic; short decl; } CProp;
+/* hint: type declaration (index into hints[], 0 = untyped); ro: readonly */
+typedef struct { char name[NAME_MAX_LEN + 1]; Value val; unsigned char vis, isStatic, ro; short decl, hint; } CProp;
 typedef struct { char name[NAME_MAX_LEN + 1]; int func; unsigned char vis, isStatic, isAbstract; short decl; } CMethod;
 typedef struct { char name[NAME_MAX_LEN + 1]; Value val; } CConst;
 
@@ -1066,7 +1068,9 @@ enum {
 	OP_EXCMATCH,                  /* class depth: push (exception instanceof class) */
 	OP_JSR, OP_RETSUB,            /* call / return from a finally block        */
 	OP_ARGNAMES,                  /* names: argument names for the next call   */
-	OP_SHOWVAL                    /* REPL: print "= value" unless null, pop     */
+	OP_SHOWVAL,                   /* REPL: print "= value" unless null, pop     */
+	OP_TYPECHK,                   /* slot hint: check / convert a parameter    */
+	OP_RETCHK                     /* hint implicit: check the return value     */
 };
 
 /* class references in the bytecode: index, or these for self / static / parent */
@@ -1096,6 +1100,27 @@ typedef struct {
 } Func;
 static Func funcs[FUNCS_MAX];
 static int  nfuncs;
+
+/* type declarations of parameters, return values and properties: a mask
+ * of the scalar / special types plus up to HINT_CLS class names (constant
+ * pool indices, resolved when checking). hints[0] is unused: 0 = untyped. */
+enum {
+	TY_INT = 1, TY_FLOAT = 2, TY_STRING = 4, TY_BOOL = 8, TY_ARRAY = 16, TY_NULL = 32,
+	TY_CALLABLE = 64, TY_OBJECT = 128, TY_ITERABLE = 256, TY_MIXED = 512, TY_VOID = 1024,
+	TY_NEVER = 2048, TY_FALSE = 4096, TY_TRUE = 8192
+};
+#define HINT_CLS  3
+#define HINTS_MAX 1024
+typedef struct {
+	unsigned short mask;
+	short ncls, cname[HINT_CLS];
+	short func;                        /* for messages: function, -1 property */
+	short fname;                       /* its name as written (constant pool)   */
+	signed char param;                 /* parameter number, -1 return value     */
+} Hint;
+static Hint hints[HINTS_MAX];
+static int  nhints = 1, keepHints = 1;
+static int  strictTypes;               /* declare(strict_types=1) seen        */
 
 static char  globalNames[GLOBALS_MAX][NAME_MAX_LEN + 1];
 static Value globals[GLOBALS_MAX];
@@ -1129,6 +1154,8 @@ static void fail(const char *fmt, ...) {
 	longjmp(errjmp, 1);
 }
 
+static int lastLoadAt = -1;         /* start of the last OP_LOAD of a variable */
+#define LOAD_QUIET 0x100            /* OP_LOAD n flag: left of ??, no uninit error */
 static int lineOverride = -1;       /* >= 0: line for the next instructions */
 
 static void emit(int w) {
@@ -1164,6 +1191,7 @@ typedef struct {
 	char caps[CAPS_MAX][NAME_MAX_LEN + 1];
 	unsigned char capSlot[CAPS_MAX];
 	int  ncap, arrow, capturing;
+	int  retHint;                      /* declared return type (hints[]), 0 none */
 } Scope;
 static Scope *scope;              /* NULL = top level (globals)            */
 
@@ -1447,6 +1475,7 @@ static void lvalue_rest(VarRef r) {
 		return;
 	}
 	if (app) fail("Cannot use [] for reading");
+	lastLoadAt = ncode;
 	emit(OP_LOAD); emit(r.scope); emit(r.slot); emit(n);
 	if (is_op("(")) rvalue_postfix();         /* $f(...) */
 }
@@ -1931,6 +1960,7 @@ static void expr_binary(int minPrec) {
 			patch(j);
 			emit(OP_TOBOOL);
 		} else if (op == -3) {                /* ?? (right assoc) */
+			if (lastLoadAt >= 0 && lastLoadAt == ncode - 4) code[ncode - 1] |= LOAD_QUIET;
 			int j = emit_jump(OP_JNNK);
 			emit(OP_POP);
 			expr_binary(prec);
@@ -2327,21 +2357,94 @@ static int const_value(Value *out) {
 	return 0;
 }
 
-static void skip_type_hint(void) {
-	accept("?");
-	while (tok.t == TK_ID) {
-		Tok *p = peek();
-		if (p->t == TK_VAR || (p->t == TK_OP && (!strcmp(p->s, "|") || !strcmp(p->s, "...") || !strcmp(p->s, "&")))) {
-			advance();
-			if (!accept("|")) break;
-		} else break;
-	}
+static int compClass = -1;          /* class being compiled: self / parent */
+static int readonlyClass;           /* readonly class: every property readonly */
+static char compFuncName[NAME_MAX_LEN * 2 + 3];   /* function being compiled */
+static int  compFuncConst = -1;     /* its name in the constant pool, once needed */
+
+static int type_word(const char *w) {
+	static const struct { const char *n; int m; } t[] = {
+		{ "int", TY_INT }, { "float", TY_FLOAT }, { "string", TY_STRING }, { "bool", TY_BOOL },
+		{ "array", TY_ARRAY }, { "null", TY_NULL }, { "callable", TY_CALLABLE }, { "object", TY_OBJECT },
+		{ "iterable", TY_ITERABLE }, { "mixed", TY_MIXED }, { "void", TY_VOID }, { "never", TY_NEVER },
+		{ "false", TY_FALSE }, { "true", TY_TRUE }
+	};
+	for (unsigned i = 0; i < sizeof t / sizeof t[0]; i++) if (!strcasecmp(w, t[i].n)) return t[i].m;
+	return 0;
 }
 
-static void skip_return_type(void) {
-	if (!accept(":")) return;
-	accept("?");
-	while (tok.t == TK_ID) { advance(); if (!accept("|")) break; }
+/* "int", "?Foo", "int|string|null"... before a parameter or property or
+ * after ":"; returns the index in hints[] or 0 when there is no type.
+ * func / param are kept for the error messages. */
+static int parse_type(int func, int param) {
+	int nullable = accept("?");
+	if (tok.t != TK_ID) { if (nullable) syntax_error(); return 0; }
+	if (nhints >= HINTS_MAX) fail("Too many type declarations");
+	Hint h;
+	memset(&h, 0, sizeof h);
+	h.func = (short)func;
+	h.param = (signed char)param;
+	if (func >= 0) {
+		if (compFuncConst < 0) compFuncConst = add_const(mk_cstr(compFuncName[0] ? compFuncName : funcs[func].name));
+		h.fname = (short)compFuncConst;
+	}
+	int parts = 0;
+	for (;;) {
+		if (tok.t != TK_ID) syntax_error();
+		int m = type_word(tok.s);
+		if (m) h.mask |= (unsigned short)m;
+		else {
+			const char *cn = tok.s;
+			if (!strcasecmp(cn, "self") || !strcasecmp(cn, "static")) {
+				if (compClass < 0) fail("Cannot use \"%s\" when no class scope is active", cn);
+				cn = classes[compClass].name;
+			} else if (!strcasecmp(cn, "parent")) {
+				if (compClass < 0 || !classes[compClass].parentName[0]) fail("Cannot use \"parent\" without a parent class");
+				cn = classes[compClass].parentName;
+			}
+			if (h.ncls >= HINT_CLS) fail("Too many classes in one type");
+			h.cname[h.ncls++] = (short)add_const(mk_cstr(cn));
+		}
+		parts++;
+		advance();
+		if (is_op("&") && peek()->t == TK_ID) fail("Intersection types are not supported");
+		if (!accept("|")) break;
+	}
+	if (nullable) { if (parts > 1) syntax_error(); h.mask |= TY_NULL; }
+	if ((h.mask & (TY_MIXED | TY_VOID | TY_NEVER)) && (parts > 1 || nullable))
+		fail("Type %s can only be used as a standalone type", h.mask & TY_MIXED ? "mixed" : h.mask & TY_VOID ? "void" : "never");
+	if (h.mask & TY_BOOL) h.mask &= (unsigned short)~(TY_FALSE | TY_TRUE);
+	hints[nhints] = h;
+	return nhints++;
+}
+
+static int parse_return_type(int func) { return accept(":") ? parse_type(func, -1) : 0; }
+
+/* "?int", "Foo|string|null" for messages */
+static void hint_str(const Hint *h, char *buf, int size) {
+	static const char *const nm[] = { "int", "float", "string", "bool", "array", "null", "callable",
+		"object", "iterable", "mixed", "void", "never", "false", "true" };
+	int others = h->ncls;
+	for (int b = 0; b < 14; b++) if ((h->mask & (1 << b)) && (1 << b) != TY_NULL) others++;
+	int q = (h->mask & TY_NULL) && others == 1;
+	int n = snprintf(buf, size, "%s", q ? "?" : "");
+	for (int i = 0; i < h->ncls && n < size; i++)
+		n += snprintf(buf + n, size - n, "%s%s", n > q ? "|" : "", consts[h->cname[i]].u.s->s);
+	for (int b = 0; b < 14 && n < size; b++)
+		if ((h->mask & (1 << b)) && (1 << b) != TY_NULL) n += snprintf(buf + n, size - n, "%s%s", n > q ? "|" : "", nm[b]);
+	if ((h->mask & TY_NULL) && !q && n < size) snprintf(buf + n, size - n, "%snull", n ? "|" : "");
+}
+
+static int hint_accepts(const Hint *h, Value *v, int strict);
+
+/* default value of a typed parameter / property must fit (int may widen) */
+static void check_default(int hi, Value *d, const char *what, const char *name) {
+	if (!hi || hint_accepts(&hints[hi], d, 1)) return;
+	char ts[64];
+	hint_str(&hints[hi], ts, sizeof ts);
+	const char *tn = d->t == T_NULL ? "null" : d->t == T_BOOL ? "bool" : d->t == T_INT ? "int" :
+	                 d->t == T_FLOAT ? "float" : d->t == T_STR ? "string" : "array";
+	fail("Cannot use %s as default value for %s $%s of type %s", tn, what, name, ts);
 }
 
 /* parameters and body; promoteCls >= 0: constructor of that class, where
@@ -2349,38 +2452,49 @@ static void skip_return_type(void) {
  * 1 { body }, 2 arrow function "=> expr", 3 closure with optional use (...) */
 static void params_and_body(Func *fn, int promoteCls, int hasBody) {
 	char promoted[PARAMS_MAX][NAME_MAX_LEN + 1];
-	int npromoted = 0;
+	int npromoted = 0, f = (int)(fn - funcs);
+	int phint[PARAMS_MAX];
+	compFuncConst = -1;
 	fn->nparams = fn->nrequired = 0;
 	expect("(");
 	while (!is_op(")")) {
-		int vis = -1;
+		int vis = -1, ro = 0;
 		while (is_kw("public") || is_kw("protected") || is_kw("private") || is_kw("readonly")) {
 			if (!is_kw("readonly")) vis = is_kw("public") ? VIS_PUBLIC : is_kw("protected") ? VIS_PROTECTED : VIS_PRIVATE;
-			else if (vis < 0) vis = VIS_PUBLIC;
+			else { ro = 1; if (vis < 0) vis = VIS_PUBLIC; }
 			advance();
 		}
 		if (vis >= 0 && promoteCls < 0) fail("Property promotion is only allowed in __construct");
-		skip_type_hint();
+		if (fn->nparams >= PARAMS_MAX) fail("Too many parameters");
+		int ph = parse_type(f, fn->nparams);
+		if (ph && (hints[ph].mask & (TY_VOID | TY_NEVER))) fail("%s cannot be used as a parameter type", hints[ph].mask & TY_VOID ? "void" : "never");
 		if (is_op("&")) fail("References are not supported");
 		if (is_op("...")) fail("Variadic parameters are not supported");
 		if (tok.t != TK_VAR) syntax_error();
-		if (fn->nparams >= PARAMS_MAX) fail("Too many parameters");
 		char pname[NAME_MAX_LEN + 1];
 		strcpy(pname, tok.s);
 		resolve_var(pname);
 		advance();
 		Value d = mk_null();
-		if (accept("=")) { if (!const_value(&d)) fail("Default value must be a constant"); }
+		int hasDef = accept("=");
+		if (hasDef) { if (!const_value(&d)) fail("Default value must be a constant"); }
 		else if (fn->nrequired != fn->nparams) fail("Required parameter after optional one");
 		else fn->nrequired++;
+		if (hasDef && ph && d.t == T_NULL) hints[ph].mask |= TY_NULL;    /* implicitly nullable */
+		else if (hasDef) check_default(ph, &d, "parameter", pname);
+		phint[fn->nparams] = ph;
 		fn->defs[fn->nparams++] = d;
 		if (vis >= 0) {
 			Class *k = &classes[promoteCls];
 			if (k->nown >= CPROPS_MAX) fail("Too many properties in %s", k->name);
+			if ((ro || readonlyClass) && !ph) fail("Readonly property %s::$%s must have type", k->name, pname);
 			CProp *pr = &k->own[k->nown++];
 			memset(pr, 0, sizeof *pr);
 			strcpy(pr->name, pname);
 			pr->vis = (unsigned char)vis;
+			pr->hint = (short)ph;
+			pr->ro = (unsigned char)(ro || readonlyClass);
+			if (ph) pr->val.t = T_UNSET;
 			strcpy(promoted[npromoted++], pname);
 		}
 		if (!accept(",")) break;
@@ -2401,13 +2515,18 @@ static void params_and_body(Func *fn, int promoteCls, int hasBody) {
 		}
 		expect(")");
 	}
-	skip_return_type();
+	int rh = parse_return_type(f);
+	if (rh && (hints[rh].mask & TY_VOID) && promoteCls >= 0) fail("Method __construct() cannot declare a return type");
+	scope->retHint = rh;
 	if (!hasBody) { expect(";"); return; }
+	for (int i = 0; i < fn->nparams; i++)          /* check / convert the arguments */
+		if (phint[i] && !(hints[phint[i]].mask & TY_MIXED)) { emit(OP_TYPECHK); emit(i); emit(phint[i]); }
 	if (hasBody == 2) {
 		if (is_op("{")) fail("fn needs => expression (for a block use function () { })");
 		expect("=>");
 		scope->capturing = 1;
 		expr_assign();
+		if (rh && !(hints[rh].mask & (TY_VOID | TY_MIXED))) { emit(OP_RETCHK); emit(rh); emit(0); }
 		emit(OP_RET);
 		return;
 	}
@@ -2425,6 +2544,7 @@ static void params_and_body(Func *fn, int promoteCls, int hasBody) {
 	}
 	advance();
 	emit(OP_NULL);
+	if (rh && !(hints[rh].mask & TY_VOID)) { emit(OP_RETCHK); emit(rh); emit(1); }
 	emit(OP_RET);
 }
 
@@ -2433,6 +2553,7 @@ static void compile_function(void) {
 	if (tok.t != TK_ID) syntax_error();
 	int f = func_index(tok.s, 1);
 	if (funcs[f].addr >= 0) fail("Cannot redeclare %s()", tok.s);
+	snprintf(compFuncName, sizeof compFuncName, "%.31s", tok.s);
 	advance();
 	lineOverride = 0;                      /* jumping over a body: no line of its own */
 	int skip = emit_jump(OP_JMP);
@@ -2512,6 +2633,7 @@ static void compile_closure(int arrow) {
 	advance();                             /* function / fn */
 	accept("&");
 	int f = new_func("{closure}");
+	strcpy(compFuncName, "{closure}");
 	closuresMade++;
 	lineOverride = 0;                      /* jumping over a body: no line of its own */
 	int skip = emit_jump(OP_JMP);
@@ -2559,6 +2681,7 @@ static void compile_method(int c, int vis, int isStatic, int isAbstract) {
 	char display[NAME_MAX_LEN * 2 + 3];
 	snprintf(display, sizeof display, "%s::%s", k->name, mname);
 	int f = new_func(display);
+	strcpy(compFuncName, display);
 	Func *fn = &funcs[f];
 	lineOverride = 0;
 	int skip = isAbstract ? -1 : emit_jump(OP_JMP);
@@ -2610,6 +2733,7 @@ static void compile_class(int kind, int isAbstract) {
 	k->isAbstract = isAbstract;
 	k->line = tok.line;
 	advance();
+	compClass = c;
 	if (compilingEnum) {
 		compilingEnum = 0;
 		k->isEnum = 1;
@@ -2678,14 +2802,15 @@ static void compile_class(int kind, int isAbstract) {
 			expect(";");
 			continue;
 		}
-		int vis = VIS_PUBLIC, isStatic = 0, isAbs = 0;
+		int vis = VIS_PUBLIC, isStatic = 0, isAbs = 0, ro = readonlyClass;
 		for (;;) {
 			if (is_kw("public")) vis = VIS_PUBLIC;
 			else if (is_kw("protected")) vis = VIS_PROTECTED;
 			else if (is_kw("private")) vis = VIS_PRIVATE;
 			else if (is_kw("static")) isStatic = 1;
 			else if (is_kw("abstract")) isAbs = 1;
-			else if (!(is_kw("final") || is_kw("readonly") || is_kw("var"))) break;
+			else if (is_kw("readonly")) ro = 1;
+			else if (!(is_kw("final") || is_kw("var"))) break;
 			advance();
 		}
 		if (is_kw("const")) {
@@ -2712,24 +2837,34 @@ static void compile_class(int kind, int isAbstract) {
 		}
 		if (kind == K_INTERFACE) fail("Interfaces may not include properties");
 		if (k->isEnum) fail("Enums may not include properties");
-		skip_type_hint();
+		int ph = parse_type(-1, -1);
+		if (ph && (hints[ph].mask & (TY_VOID | TY_NEVER | TY_CALLABLE))) fail("Property cannot have this type");
 		do {
 			if (tok.t != TK_VAR) syntax_error();
 			for (int i = 0; i < k->nown; i++)
 				if (!strcmp(k->own[i].name, tok.s)) fail("Cannot redeclare %s::$%s", k->name, tok.s);
 			if (k->nown >= CPROPS_MAX) fail("Too many properties in %s", k->name);
+			if (ro && !ph) fail("Readonly property %s::$%s must have type", k->name, tok.s);
+			if (ro && isStatic) fail("Static property %s::$%s cannot be readonly", k->name, tok.s);
 			CProp *pr = &k->own[k->nown];
 			memset(pr, 0, sizeof *pr);
 			snprintf(pr->name, sizeof pr->name, "%.31s", tok.s);
 			pr->vis = (unsigned char)vis;
 			pr->isStatic = (unsigned char)isStatic;
+			pr->hint = (short)ph;
+			pr->ro = (unsigned char)ro;
 			advance();
-			if (accept("=") && !const_value(&pr->val)) fail("Property default must be a constant expression");
+			if (accept("=")) {
+				if (ro) fail("Readonly property %s::$%s cannot have default value", k->name, pr->name);
+				if (!const_value(&pr->val)) fail("Property default must be a constant expression");
+				check_default(ph, &pr->val, "property", pr->name);
+			} else if (ph && !isStatic) pr->val.t = T_UNSET;
 			k->nown++;
 		} while (accept(","));
 		expect(";");
 	}
 	advance();
+	compClass = -1;
 }
 
 static void statement(void) {
@@ -2768,11 +2903,33 @@ static void statement(void) {
 		}
 		if (is_kw("return")) {
 			advance();
-			if (is_op(";") || tok.t == TK_EOF) emit(OP_NULL); else expr();
+			int rh = scope ? scope->retHint : 0, none = is_op(";") || tok.t == TK_EOF;
+			if (rh && (hints[rh].mask & TY_NEVER)) fail("A never-returning function must not return");
+			if (rh && (hints[rh].mask & TY_VOID) && !none) fail("A void function must not return a value");
+			if (rh && !(hints[rh].mask & TY_VOID) && none) fail("A function with return type must return a value");
+			if (none) emit(OP_NULL); else expr();
+			if (rh && !(hints[rh].mask & (TY_VOID | TY_MIXED))) { emit(OP_RETCHK); emit(rh); emit(0); }
 			end_stmt();
 			leave_trys(-1);
 			if (scope) emit(OP_RET);
 			else { emit(OP_POP); emit(OP_END); }
+			return;
+		}
+		if (is_kw("declare")) {                /* declare(strict_types=1); */
+			advance();
+			expect("(");
+			do {
+				if (tok.t != TK_ID) syntax_error();
+				int st = !strcasecmp(tok.s, "strict_types");
+				advance();
+				expect("=");
+				Value v;
+				if (!const_value(&v)) syntax_error();
+				if (st) strictTypes = v.t == T_INT && v.u.i == 1;
+				release(v);
+			} while (accept(","));
+			expect(")");
+			end_stmt();
 			return;
 		}
 		if (is_kw("global")) {
@@ -2822,10 +2979,12 @@ static void statement(void) {
 			return;
 		}
 		if (is_kw("abstract") || is_kw("final") || (is_kw("readonly") && peek()->t == TK_ID)) {
-			int abs = 0;
-			while (is_kw("abstract") || is_kw("final") || is_kw("readonly")) { if (is_kw("abstract")) abs = 1; advance(); }
+			int abs = 0, ro = 0;
+			while (is_kw("abstract") || is_kw("final") || is_kw("readonly")) { if (is_kw("abstract")) abs = 1; if (is_kw("readonly")) ro = 1; advance(); }
 			if (!is_kw("class")) syntax_error();
+			readonlyClass = ro;
 			compile_class(K_CLASS, abs);
+			readonlyClass = 0;
 			return;
 		}
 		if (is_kw("class") && peek()->t == TK_ID) { compile_class(K_CLASS, 0); return; }
@@ -3119,12 +3278,22 @@ static Value *var_ptr(int sc, int slot) {
 	return static_prop(sc - SC_STATIC - 3, slot);
 }
 
+static int issetMode;               /* isset(): uninitialized props are null */
+
+static void uninit_error(int cls, const char *name) __attribute__((noreturn));
+static void uninit_error(int cls, const char *name) {
+	int i = find_prop(cls, name);
+	fail("Typed property %s::$%s must not be accessed before initialization",
+	     classes[i >= 0 ? classes[cls].props[i].decl : cls].name, name);
+}
+
 /* read access: returns an owned value, missing keys give null */
 static Value index_get(Value c, Value k) {
 	if (k.t == T_PNAME) {
 		if (c.t != T_OBJ) return mk_null();           /* PHP: warning, null */
 		Value *p = obj_prop(c.u.o, k, 0);
 		if (!p) return mk_null();
+		if (p->t == T_UNSET) { if (issetMode) return mk_null(); uninit_error(c.u.o->cls, k.u.s->s); }
 		retain(*p);
 		return *p;
 	}
@@ -3144,14 +3313,35 @@ static Value index_get(Value c, Value k) {
 	return mk_null();
 }
 
+/* typed property that lval_slot() returned: the value written to it is
+ * checked with check_prop() */
+static CProp *lvProp;
+
 /* write access: walks/creates the keys, returns the slot */
 static Value *lval_slot(int sc, int slot, Value *keys, int n) {
 	Value *p = var_ptr(sc, slot);
+	lvProp = NULL;
 	for (int i = 0; i < n; i++) {
 		if (keys[i].t == T_PNAME) {
 			if (p->t != T_OBJ) fail("Attempt to assign property \"%s\" on %s", keys[i].u.s->s, type_name(*p));
 			if (classes[p->u.o->cls].isEnum) fail("Cannot modify readonly property %s::$%s", classes[p->u.o->cls].name, keys[i].u.s->s);
-			p = obj_prop(p->u.o, keys[i], 1);
+			Obj *o = p->u.o;
+			int pi = find_prop(o->cls, keys[i].u.s->s);
+			p = obj_prop(o, keys[i], 1);
+			if (pi < 0) continue;
+			CProp *d = &classes[o->cls].props[pi];
+			int inner = i + 1 < n;
+			if (p->t == T_UNSET && inner) uninit_error(o->cls, d->name);
+			/* readonly: set once from inside the class; an object in it stays mutable */
+			if (d->ro && !(inner && p->t == T_OBJ && keys[i + 1].t == T_PNAME)) {
+				if (p->t != T_UNSET) fail("Cannot modify readonly property %s::$%s", classes[d->decl].name, d->name);
+				if (!can_access(VIS_PRIVATE, d->decl)) {
+					int c = nframes ? frames[nframes - 1].cls : -1;
+					fail("Cannot initialize readonly property %s::$%s from %s%s", classes[d->decl].name, d->name,
+					     c < 0 ? "global scope" : "scope ", c < 0 ? "" : classes[c].name);
+				}
+			}
+			if (!inner && d->hint) lvProp = d;
 			continue;
 		}
 		if (p->t == T_OBJ) fail("Cannot use object of type %s as array", classes[p->u.o->cls].name);
@@ -3328,6 +3518,9 @@ static void enter_func(int f, int argc, Value thisv, int cls, int scls, int ctor
 }
 
 static void exec_one(void);
+static void check_param(int slot, int hi);
+static void check_ret(int hi, int implicit);
+static void check_prop(Value *r);
 
 /* the value below argc arguments is called: closure, function name
  * ("strlen", "myfunc", "Class::method"), [$obj, "method"], ["Class", "method"]
@@ -3482,14 +3675,16 @@ static void show_value(Sink *s, Value v, int depth, int multi) {
 		sk(s, k->name, HC_CLASS);
 		if (depth > 2) { sk(s, "{...}", HC_PUNCT); return; }
 		sk(s, " {", HC_PUNCT);
-		int n = o->nprops + (o->dyn ? o->dyn->n : 0);
+		int n = o->nprops + (o->dyn ? o->dyn->n : 0), shown = 0;
 		for (int i = 0; i < n; i++) {
 			const char *pn;
 			Value pv;
 			if (i < o->nprops) { pn = k->props[i].name; pv = o->props[i]; }
 			else { Entry *e = &o->dyn->e[i - o->nprops]; pn = e->key.t == T_STR ? e->key.u.s->s : "?"; pv = e->val; }
+			if (pv.t == T_UNSET) continue;
 			if (multi) sk(s, "\n  ", HC_TEXT);
-			else if (i) sk(s, ", ", HC_PUNCT);
+			else if (shown) sk(s, ", ", HC_PUNCT);
+			shown++;
 			sk(s, pn, HC_PROP);
 			sk(s, ": ", HC_PUNCT);
 			show_value(s, pv, depth + 1, 0);
@@ -3587,6 +3782,7 @@ static int handle_throw(int minFrames) {
 		pendingExc = error_object(errText);
 		excPending = 1;
 	}
+	issetMode = 0;
 	Handler h = handlers[--nhandlers];
 	while (nframes > h.nframes) { Frame *fr = &frames[--nframes]; release(fr->thisv); fr->thisv = mk_null(); }
 	while (sp > h.sp) release(pop());
@@ -3712,25 +3908,35 @@ static void exec_one(void) {
 	case OP_APPENDKEY: r.t = T_APPEND; r.u.i = 0; push(r); return;
 	case OP_LOAD: {
 		int sc = code[pc++], slot = code[pc++], n = code[pc++];
+		issetMode = n >> 8;
+		n &= 255;
 		Value cur = *var_ptr(sc, slot);
 		retain(cur);
 		for (int i = 0; i < n; i++) {
-			Value nv = index_get(cur, stack[sp - n + i]);
+			Value k = stack[sp - n + i];
+			if (!issetMode && k.t == T_PNAME && cur.t == T_OBJ) {   /* error without leaking cur */
+				Value *q = obj_prop(cur.u.o, k, 0);
+				if (q && q->t == T_UNSET) { int c = cur.u.o->cls; release(cur); uninit_error(c, k.u.s->s); }
+			}
+			Value nv = index_get(cur, k);
 			release(cur);
 			cur = nv;
 		}
+		issetMode = 0;
 		pop_n(n);
 		push(cur);
 		return;
 	}
 	case OP_STORE: {
 		int sc = code[pc++], slot = code[pc++], n = code[pc++], bop = code[pc++];
+		Value *p = lval_slot(sc, slot, &stack[sp - 1 - n], n);   /* may fail: rhs still on the stack */
 		Value rhs = pop();
-		Value *p = lval_slot(sc, slot, &stack[sp - n], n);
 		if (bop) {
+			if (p->t == T_UNSET) { release(rhs); uninit_error(lvProp->decl, lvProp->name); }
 			r = binop(bop, *p, rhs);
 			release(rhs);
 		} else r = rhs;
+		if (lvProp) check_prop(&r);
 		release(*p);
 		*p = r;
 		retain(r);
@@ -3742,8 +3948,10 @@ static void exec_one(void) {
 		int sc = code[pc++], slot = code[pc++], n = code[pc++], mode = code[pc++];
 		Value *p = lval_slot(sc, slot, &stack[sp - n], n);
 		Value old = *p;
+		if (old.t == T_UNSET) uninit_error(lvProp->decl, lvProp->name);
 		if (old.t == T_NULL) r = (mode & 1) ? mk_null() : mk_int(1);
 		else r = arith((mode & 1) ? OP_SUB : OP_ADD, old, mk_int(1));
+		if (lvProp) check_prop(&r);
 		*p = r;
 		pop_n(n);
 		if (mode & 2) push(old);
@@ -3764,10 +3972,14 @@ static void exec_one(void) {
 			Value last = stack[sp - 1];
 			if (p && last.t == T_PNAME && p->t == T_OBJ) {
 				Obj *o = p->u.o;
-				if (find_prop(o->cls, last.u.s->s) >= 0) {
+				int pi = find_prop(o->cls, last.u.s->s);
+				if (pi >= 0) {
+					CProp *d = &classes[o->cls].props[pi];
 					Value *q = obj_prop(o, last, 0);
+					if (d->ro) fail("Cannot unset readonly property %s::$%s", classes[d->decl].name, d->name);
 					release(*q);
 					*q = mk_null();
+					if (d->hint) q->t = T_UNSET;
 				} else if (o->dyn) {
 					Value key = last;
 					key.t = T_STR;
@@ -3788,6 +4000,7 @@ static void exec_one(void) {
 		}
 		Value cur = *p;
 		retain(cur);
+		issetMode = 1;
 		for (int i = 0; i < n; i++) {
 			Value nv = cur.t == T_ARR || cur.t == T_STR || cur.t == T_OBJ ? index_get(cur, stack[sp - n + i]) : mk_null();
 			if (cur.t == T_STR) {
@@ -3797,6 +4010,7 @@ static void exec_one(void) {
 			release(cur);
 			cur = nv;
 		}
+		issetMode = 0;
 		pop_n(n);
 		r = mk_bool(cur.t != T_NULL);
 		release(cur);
@@ -3858,7 +4072,7 @@ static void exec_one(void) {
 			Value arr = mk_arr();
 			for (int i = 0; i < o->nprops; i++) {
 				CProp *d = &classes[o->cls].props[i];
-				if (!can_access(d->vis, d->decl)) continue;
+				if (!can_access(d->vis, d->decl) || o->props[i].t == T_UNSET) continue;
 				retain(o->props[i]);
 				Value key = mk_cstr(d->name);
 				arr_set(arr.u.a, key, o->props[i]);
@@ -4068,6 +4282,16 @@ static void exec_one(void) {
 		push(mk_bool(c >= 0 && e.t == T_OBJ && is_a(e.u.o->cls, c)));
 		return;
 	}
+	case OP_TYPECHK: {
+		int slot = code[pc++], h = code[pc++];
+		check_param(slot, h);
+		return;
+	}
+	case OP_RETCHK: {
+		int h = code[pc++], implicit = code[pc++];
+		check_ret(h, implicit);
+		return;
+	}
 	case OP_SHOWVAL: {
 		a = pop();
 		if (a.t != T_NULL) show_result(a);
@@ -4230,6 +4454,16 @@ static void dump(Buf *b, Value v, int indent, int varDump) {
 			if (i < o->nprops) { pn = k->props[i].name; pv = o->props[i]; vis = k->props[i].vis; }
 			else { pn = o->dyn->e[i - o->nprops].key.t == T_STR ? o->dyn->e[i - o->nprops].key.u.s->s : "?"; pv = o->dyn->e[i - o->nprops].val; }
 			const char *suffix = vis == VIS_PROTECTED ? ":protected" : vis == VIS_PRIVATE ? ":private" : "";
+			if (pv.t == T_UNSET) {                 /* var_dump: uninitialized(int) */
+				if (!varDump) continue;
+				char ts[64];
+				hint_str(&hints[k->props[i].hint], ts, sizeof ts);
+				for (int j = 0; j < indent + 2; j++) buf_add(b, " ", 1);
+				buf_adds(b, "[\""); buf_adds(b, pn); buf_adds(b, "\""); buf_adds(b, suffix); buf_adds(b, "]=>\n");
+				for (int j = 0; j < indent + 2; j++) buf_add(b, " ", 1);
+				buf_adds(b, "uninitialized("); buf_adds(b, ts); buf_adds(b, ")\n");
+				continue;
+			}
 			if (!varDump) {
 				for (int j = 0; j < indent + 4; j++) buf_add(b, " ", 1);
 				buf_add(b, "[", 1); buf_adds(b, pn); buf_adds(b, suffix); buf_adds(b, "] => ");
@@ -4651,6 +4885,8 @@ BI(gettype) {
 	return mk_cstr(names[a[0].t <= T_ARR ? a[0].t : 0]);
 }
 
+BI(get_debug_type) { UNUSED; return mk_cstr(type_name(a[0])); }
+
 /* --- classes --- */
 
 static int class_of_arg(Value v) {
@@ -4708,7 +4944,7 @@ BI(get_object_vars) {
 	Value r = mk_arr();
 	for (int i = 0; i < o->nprops; i++) {
 		CProp *d = &classes[o->cls].props[i];
-		if (!can_access(d->vis, d->decl)) continue;
+		if (!can_access(d->vis, d->decl) || o->props[i].t == T_UNSET) continue;
 		Value key = mk_cstr(d->name);
 		retain(o->props[i]);
 		arr_set(r.u.a, key, o->props[i]);
@@ -5034,6 +5270,123 @@ static void need_callable(Value v, const char *fn) {
 }
 
 BI(is_callable) { UNUSED; return mk_bool(is_callable_val(a[0])); }
+
+/* --- type declarations --- */
+
+static int hint_class_ok(const Hint *h, Value v) {
+	for (int i = 0; i < h->ncls; i++) {
+		const char *cn = consts[h->cname[i]].u.s->s;
+		if (*cn == '\\') cn++;
+		if (v.t == T_CLO) { if (!strcasecmp(cn, "Closure")) return 1; continue; }
+		if (v.t != T_OBJ) return 0;
+		int c = find_class(cn);
+		if (c >= 0 && is_a(v.u.o->cls, c)) return 1;
+	}
+	return 0;
+}
+
+/* does *v fit hint h? Like PHP, scalars are converted in place unless
+ * strict ("5" -> 5 for int); int always widens to float. */
+static int hint_accepts(const Hint *h, Value *v, int strict) {
+	int m = h->mask;
+	if (m & TY_MIXED) return 1;
+	switch (v->t) {
+	case T_NULL: if (m & TY_NULL) return 1; break;
+	case T_BOOL: if ((m & TY_BOOL) || (m & (v->u.i ? TY_TRUE : TY_FALSE))) return 1; break;
+	case T_INT:
+		if (m & TY_INT) return 1;
+		if (m & TY_FLOAT) { *v = mk_float((float)v->u.i); return 1; }
+		break;
+	case T_FLOAT: if (m & TY_FLOAT) return 1; break;
+	case T_STR: case T_ARR:
+		if (m & (v->t == T_STR ? TY_STRING : TY_ARRAY | TY_ITERABLE)) return 1;
+		if ((m & TY_CALLABLE) && !compiling && is_callable_val(*v)) return 1;
+		break;
+	case T_OBJ: case T_CLO:
+		if ((m & TY_OBJECT) || hint_class_ok(h, *v)) return 1;
+		if ((m & TY_CALLABLE) && is_callable_val(*v)) return 1;
+		break;
+	}
+	if (strict) return 0;
+	/* coercive mode: only scalars, preferring int, float, string, bool */
+	Value n;
+	switch (v->t) {
+	case T_STR:
+		if (numeric_str(v->u.s, &n)) {
+			if (n.t == T_INT && (m & TY_INT)) break;
+			if (m & TY_FLOAT) { n = mk_float(to_float(n)); break; }
+			if (m & TY_INT) { n = mk_int(float_to_int(n.u.f)); break; }
+		}
+		if (m & TY_BOOL) { n = mk_bool(to_bool(*v)); break; }
+		return 0;
+	case T_INT:
+		if (m & TY_STRING) n = cast(*v, T_STR);
+		else if (m & TY_BOOL) n = mk_bool(v->u.i);
+		else return 0;
+		break;
+	case T_FLOAT:
+		if (isnan(v->u.f) || isinf(v->u.f)) { if (!(m & (TY_STRING | TY_BOOL))) return 0; }
+		else if ((m & TY_INT) && (v->u.f == floorf(v->u.f) || !(m & TY_STRING))) { n = mk_int(float_to_int(v->u.f)); break; }
+		if (m & TY_STRING) n = cast(*v, T_STR);
+		else if (m & TY_BOOL) n = mk_bool(v->u.f != 0);
+		else return 0;
+		break;
+	case T_BOOL:
+		if (m & TY_INT) n = mk_int(v->u.i);
+		else if (m & TY_FLOAT) n = mk_float((float)v->u.i);
+		else if (m & TY_STRING) n = mk_cstr(v->u.i ? "1" : "");
+		else return 0;
+		break;
+	default: return 0;
+	}
+	release(*v);
+	*v = n;
+	return 1;
+}
+
+static void type_error(const char *fmt, ...) __attribute__((noreturn, format(printf, 1, 2)));
+static void type_error(const char *fmt, ...) {
+	char msg[160];
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(msg, sizeof msg, fmt, ap);
+	va_end(ap);
+	throw_new("TypeError", msg);
+}
+
+static void check_param(int slot, int hi) {
+	const Hint *h = &hints[hi];
+	Value *v = &stack[frames[nframes - 1].base + slot];
+	if (hint_accepts(h, v, strictTypes)) return;
+	char ts[64];
+	hint_str(h, ts, sizeof ts);
+	const Func *fn = &funcs[h->func];
+	type_error("%s(): Argument #%d ($%s) must be of type %s, %s given", consts[h->fname].u.s->s, h->param + 1,
+	           fn->localNames ? fn->localNames[slot] : "?", ts, type_name(*v));
+}
+
+static void check_ret(int hi, int implicit) {
+	const Hint *h = &hints[hi];
+	const char *fname = consts[h->fname].u.s->s;
+	if (!implicit && hint_accepts(h, &stack[sp - 1], strictTypes)) return;
+	if (h->mask & TY_NEVER) type_error("%s(): never-returning function must not implicitly return", fname);
+	char ts[64];
+	hint_str(h, ts, sizeof ts);
+	type_error("%s(): Return value must be of type %s, %s returned", fname, ts, implicit ? "none" : type_name(stack[sp - 1]));
+}
+
+/* *r (owned) is about to be stored in the typed property lval_slot() found */
+static void check_prop(Value *r) {
+	CProp *d = lvProp;
+	lvProp = NULL;
+	if (hint_accepts(&hints[d->hint], r, strictTypes)) return;
+	char ts[64], tn[NAME_MAX_LEN + 1];
+	hint_str(&hints[d->hint], ts, sizeof ts);
+	snprintf(tn, sizeof tn, "%s", type_name(*r));
+	release(*r);
+	*r = mk_null();
+	type_error("Cannot assign %s to property %s::$%s of type %s", tn, classes[d->decl].name, d->name, ts);
+}
 BI(function_exists) {
 	UNUSED;
 	const char *name = S(0, NULL);
@@ -5852,7 +6205,7 @@ static int json_enc(Buf *b, Value v, int flags, int depth) {
 		for (int i = 0; i < n; i++) {
 			const char *pn;
 			Value pv;
-			if (i < o->nprops) { if (k->props[i].vis != VIS_PUBLIC) continue; pn = k->props[i].name; pv = o->props[i]; }
+			if (i < o->nprops) { if (k->props[i].vis != VIS_PUBLIC || o->props[i].t == T_UNSET) continue; pn = k->props[i].name; pv = o->props[i]; }
 			else { Entry *e = &o->dyn->e[i - o->nprops]; pn = sval(e->key, NULL); pv = e->val; }
 			if (!first) buf_add(b, ",", 1);
 			first = 0;
@@ -6037,6 +6390,7 @@ static const Builtin builtins[] = {
 	{ "is_float", bi_is_float, 1, 1, 0 }, { "is_string", bi_is_string, 1, 1, 0 },
 	{ "is_bool", bi_is_bool, 1, 1, 0 }, { "is_array", bi_is_array, 1, 1, 0 },
 	{ "is_null", bi_is_null, 1, 1, 0 }, { "gettype", bi_gettype, 1, 1, 0 },
+	{ "get_debug_type", bi_get_debug_type, 1, 1, 0 },
 	{ "is_object", bi_is_object, 1, 1, 0 }, { "get_class", bi_get_class, 1, 1, 0 },
 	{ "get_parent_class", bi_get_parent_class, 1, 1, 0 }, { "class_exists", bi_class_exists, 1, 1, 0 },
 	{ "interface_exists", bi_interface_exists, 1, 1, 0 }, { "method_exists", bi_method_exists, 2, 2, 0 },
@@ -6207,8 +6561,13 @@ static void reset_code(void) {
 	nfuncs = 0;
 	for (int i = 0; i < nclasses; i++) free_class(&classes[i]);
 	nclasses = 0;
+	nhints = 1;
+	strictTypes = 0;
+	compClass = -1;
+	readonlyClass = 0;
 	clear_user_consts();
 	compile_prelude();
+	keepHints = nhints;
 	progCode = keepCode = ncode;
 	progConst = keepConst = nconst;
 	progFuncs = keepFuncs = nfuncs;
@@ -6223,6 +6582,9 @@ static void reset_direct_code(void) {
 	for (int i = keepFuncs; i < nfuncs; i++)
 		{ for (int k = 0; k < funcs[i].nparams; k++) release(funcs[i].defs[k]); free(funcs[i].localNames); funcs[i].localNames = NULL; }
 	nfuncs = keepFuncs;
+	nhints = keepHints;
+	compClass = -1;
+	readonlyClass = 0;
 	for (int i = progClasses; i < nclasses; i++) free_class(&classes[i]);
 	nclasses = progClasses;
 }
@@ -6763,6 +7125,8 @@ static char pendingCmd[LINE_MAX_LEN + 1];   /* editor command or direct code */
 static void start_vm(int addr) {
 	vm_reset();
 	nhandlers = 0;
+	issetMode = 0;
+	lvProp = NULL;
 	frames[0].retpc = -1;
 	frames[0].base = 0;
 	frames[0].func = -1;
@@ -6792,6 +7156,7 @@ static void cmd_run(void) {
 	keepCode = ncode;
 	keepConst = nconst;
 	keepFuncs = nfuncs;
+	keepHints = nhints;
 	start_vm(start);
 }
 
@@ -6807,7 +7172,7 @@ static void cmd_direct(const char *src) {
 	directCompile = 0;
 	compiling = 0;
 	free_src_bufs();
-	if (closuresMade) { keepCode = ncode; keepConst = nconst; keepFuncs = nfuncs; }
+	if (closuresMade) { keepCode = ncode; keepConst = nconst; keepFuncs = nfuncs; keepHints = nhints; }
 	start_vm(start);
 }
 

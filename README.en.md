@@ -121,7 +121,7 @@ Supported:
 * **Functions:** `strlen substr strpos str_repeat str_pad str_replace strcmp strcasecmp str_contains str_starts_with
   str_ends_with strtoupper strtolower ucfirst lcfirst trim ltrim rtrim strrev explode implode sprintf
   printf vsprintf vprintf number_format chr ord intval floatval strval boolval is_numeric is_int is_float is_string
-  is_bool is_array is_null gettype abs floor ceil round sqrt pow sin cos tan asin acos atan atan2
+  is_bool is_array is_null gettype get_debug_type abs floor ceil round sqrt pow sin cos tan asin acos atan atan2
   exp log log10 pi fmod intdiv deg2rad rad2deg min max rand mt_rand srand count in_array
   array_search array_key_exists array_keys array_values array_sum array_reverse array_slice
   array_merge array_fill range array_push array_pop array_shift array_unshift sort rsort shuffle
@@ -132,7 +132,7 @@ Supported:
 * **Closures and arrow functions** (`function () use ($x) { … }`, `fn ($x) => …`) – see below
 * **Classes, interfaces and traits** – see below
 * **Exceptions** (`try`/`catch`/`finally`, `throw`) – see below
-* **PHP 8:** `match`, `enum` and named arguments – see below
+* **PHP 8:** `match`, `enum`, named arguments, type declarations and `readonly` – see below
 
 Not included are, among others, references (`&`), static variables in functions and
 namespaces (a leading `\` as in `\Exception` is allowed). As in PHP, keywords and function names are case-insensitive, variables are not.
@@ -174,7 +174,7 @@ var_dump($c instanceof Shape);              // bool(true)
 * **Classes:** `class`, `extends`, `implements`, `abstract`, `final`, properties with defaults
   (arrays too), methods, `const`, `static` properties and methods, visibility
   `public`/`protected`/`private` (enforced), constructor `__construct()` with promotion
-  (`public function __construct(private int $x)`); type declarations are accepted and ignored
+  (`public function __construct(private int $x)`); type declarations are checked – see “Types”
 * **Objects:** `new A(…)`, `new static`/`new self`, `$this`, `$o->x`, `$o->f()`, chains such as
   `$this->items[] = $x` or `(new A)->f()->g()`, `$o->$name`, `A::X`, `A::$n`, `A::f()`, `self::`,
   `parent::`, `static::` (late static binding), `A::class`, `instanceof`, `clone`, `__toString()`
@@ -227,6 +227,41 @@ function card(string $suit = 'H', int $rank = 1, bool $face = false) { ... }
 card(rank: 12, face: true);
 $p = new Point(y: 5);
 ```
+
+### Types
+
+Type declarations are checked at run time like in PHP 8: on parameters, return values and
+properties. Supported are `int`, `float`, `string`, `bool`, `array`, `callable`, `iterable`,
+`object`, `mixed`, `null`, `false`, `true`, class and interface names, `self`/`static`/`parent`,
+nullable (`?int`) and union types (`int|string|null`), and for return values also `void` and `never`.
+
+```php
+function plus(int $a, int $b): int { return $a + $b; }
+echo plus(2, "3");                     // 5: "3" becomes 3
+plus("abc", 1);                        // TypeError: plus(): Argument #1 ($a) must be of type int, string given
+
+class Point {
+  public function __construct(public int $x = 0, public readonly ?string $name = null) {}
+}
+$p = new Point(x: "5");                 // $p->x is int(5)
+$p->x = "ten";                          // TypeError: Cannot assign string to property Point::$x of type int
+$p->name = "new";                       // Error: Cannot modify readonly property Point::$name
+```
+
+* **Conversion:** By default PHP converts fitting scalars (`"5"` → `5`, `5` → `"5"`, `1` → `true`).
+  With `declare(strict_types=1);` the type must match exactly; only `int` still widens to `float`.
+  Here the declaration applies to the whole program, not just the one file.
+* **Properties:** `public int $n = 0;` checks every assignment. A typed property without a default
+  starts uninitialized: reading it is an error, while `isset()` and `??` give `false` or the
+  fallback.
+* **`readonly`:** the property is set once from inside the class (usually in the constructor) and
+  can only be read after that. `readonly class` makes every property readonly. Constructor
+  promotion carries over the type and `readonly`.
+* **Errors:** Wrong types throw a `TypeError` that you can `catch`. Mistakes the compiler can see
+  already are parse errors, e.g. `return 1;` in a `void` function or a default of the wrong type.
+* **Helpers:** `gettype()` and `get_debug_type()` (`int`, `float`, `Point`, `Closure` …).
+* **Not included:** intersection types (`A&B`), type checks for built-in functions and static
+  properties, and signature checks when overriding methods.
 
 ### Exceptions
 
