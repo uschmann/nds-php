@@ -36,7 +36,7 @@ void kbd_drop_suggestions(void);
 /* menu below the three dots: entries are returned as KC_MENU_ITEM + i;
  * a tap anywhere else closes it. icons: KI_* per entry; a divider line
  * is drawn before entry dividerBefore (-1 = none) */
-enum { KI_NONE, KI_OPEN, KI_SAVE, KI_DEBUG, KI_SPRITE, KI_SOUND, KI_EXIT };
+enum { KI_NONE, KI_OPEN, KI_SAVE, KI_DEBUG, KI_SPRITE, KI_SOUND, KI_VERSIONS, KI_EXIT };
 void kbd_open_menu(const char *const *items, const unsigned char *icons, int n, int dividerBefore);
 void kbd_close_menu(void);
 bool kbd_menu_open(void);   /* forget them without drawing (another screen is shown) */

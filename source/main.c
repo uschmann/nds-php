@@ -29,6 +29,7 @@
 #include "complete.h"
 #include "syntax.h"
 #include "refactor.h"
+#include "vers.h"
 
 #define COLS 32
 #define ROWS 24
@@ -270,7 +271,8 @@ static void input_draw(Screen *s, int x, int y, int clearLen, int *cx, int *cy) 
 		syntax_highlight(inbuf, inlen, colors);
 		/* REPL commands (RUN, SAVE "X" ...) in the keyword colour */
 		static const char *const cmds[] = { "RUN", "NEW", "CLR", "LIST", "SAVE", "LOAD", "DIR", "DELETE",
-		                                    "EXIT", "EDIT", "FILES", "RMFILE", "RENAME", "SPRED", "SNDED", NULL };
+		                                    "EXIT", "EDIT", "FILES", "RMFILE", "RENAME", "SPRED", "SNDED",
+		                                    "COMMIT", "LOG", "STATUS", "DIFF", "CHECKOUT", NULL };
 		int w = 0;
 		while (w < inlen && isalpha((unsigned char)inbuf[w])) w++;
 		for (int k = 0; cmds[k] && w; k++)
@@ -1548,6 +1550,92 @@ static void render_browser(void) {
 	bgHide(gfxBg);
 }
 
+/* ------------------------------------------------------------------ */
+/* versions (menu): COMMIT / DIFF / CHECKOUT, diff preview on top       */
+/* ------------------------------------------------------------------ */
+
+static bool versOpen, versChecking;
+static Screen vrScr;
+
+static void open_versions(void) {
+	versOpen = true;
+	versChecking = false;
+	vers_open();
+}
+
+static void close_versions(void) {
+	versOpen = false;
+	kbd_redraw();
+}
+
+static void versions_frame(u32 down, u32 rep, bool touching, int px, int py) {
+	if (basic_state() != BASIC_IDLE) return;         /* CHECKOUT running */
+	int r = vers_poll(touching, px, py, down, rep);
+	char cmd[40];
+	if (r == VR_EXIT) close_versions();
+	else if (r == VR_DIFF) {
+		/* the whole diff in the output view */
+		close_versions();
+		view = VIEW_OUTPUT;
+		snprintf(cmd, sizeof cmd, "DIFF %d", vers_target());
+		exec_line(cmd);
+	} else if (r == VR_CHECKOUT) {
+		snprintf(cmd, sizeof cmd, "CHECKOUT %d%s", vers_target(), vers_force() ? " FORCE" : "");
+		versChecking = true;
+		exec_line(cmd);
+	} else if (r == VR_COMMIT) {
+		/* ask for the message in the REPL */
+		close_versions();
+		view = VIEW_OUTPUT;
+		if (!replActive) repl_prompt();
+		input_set("COMMIT \"");
+	}
+}
+
+/* CHECKOUT started from the version list has finished */
+static void versions_exec_done(void) {
+	const char *e = basic_last_error();
+	versChecking = false;
+	vers_refresh();                                 /* the status card drew over it */
+	if (strstr(e, "Uncommitted")) { vers_ask_force(); return; }
+	if (*e) { vers_set_message(e); return; }
+	close_versions();
+	select_file(0);
+	ed_reset();
+	view = VIEW_EDIT;
+}
+
+static void render_versions(void) {
+	char buf[40];
+	u8 colors[BASIC_LINE_MAX + 1];
+	scr_clear(&vrScr, TEXTCOL);
+	for (int x = 0; x < COLS; x++) {
+		scr_put(&vrScr, x, 0, ' ', BAR_FG, BAR_BG);
+		scr_put(&vrScr, x, ROWS - 1, ' ', FOOT_FG, FOOT_BG);
+	}
+	snprintf(buf, sizeof buf, "%.30s", vers_preview_title());
+	scr_text(&vrScr, 1, 0, buf, BAR_FG, BAR_BG);
+	int n = vers_preview_count();
+	for (int i = 0; i < n && i < ROWS - 2; i++) {
+		const char *t = vers_preview_line(i);
+		int l = (int)strlen(t), code = 0;
+		u8 pc = GREY;
+		/* "+12 code" green, "-12 code" red, "== file" cyan, the code highlighted */
+		if ((t[0] == '+' || t[0] == '-') && isdigit((unsigned char)t[1])) {
+			pc = t[0] == '+' ? GREEN : RED;
+			while (code < l && t[code] != ' ') code++;
+			if (code < l) code++;
+		} else if (t[0] == '=' && t[1] == '=') { pc = CYAN; code = l; }
+		else code = l;
+		for (int c = 0; c < code && c < COLS; c++) scr_put(&vrScr, c, 1 + i, t[c], pc, NOFILL);
+		syntax_highlight(t + code, l - code, colors);
+		for (int c = code; c < l && c < COLS; c++) scr_put(&vrScr, c, 1 + i, t[c], colors[c - code], NOFILL);
+	}
+	scr_text(&vrScr, 0, ROWS - 1, L("A:DIFF  B:ZUR\x9a" "CK", "A:DIFF  B:BACK"), FOOT_FG, FOOT_BG);
+	scr_upload(&vrScr, -1, -1);
+	bgHide(gfxBg);
+}
+
 static void finish_exec(void) {
 	const char *e = basic_last_error();
 	/* the program is over: screens back to normal */
@@ -1556,6 +1644,11 @@ static void finish_exec(void) {
 	if (browserOpen) {
 		messageShown = false;
 		browser_exec_done();
+		return;
+	}
+	if (versOpen) {
+		messageShown = false;
+		versions_exec_done();
 		return;
 	}
 	if (*e) {
@@ -1827,7 +1920,7 @@ static char compBefore[BASIC_LINE_MAX + 1];
 
 /* where typing goes: 1 editor, 2 REPL prompt, 0 nowhere */
 static int typing_context(void) {
-	if (basic_state() != BASIC_IDLE || helpOpen || browserOpen || spredOpen || sndedOpen || listMode) return 0;
+	if (basic_state() != BASIC_IDLE || helpOpen || browserOpen || versOpen || spredOpen || sndedOpen || listMode) return 0;
 	if (view == VIEW_EDIT) return 1;
 	if (view == VIEW_OUTPUT && replActive) return 2;
 	return 0;
@@ -1974,13 +2067,14 @@ static void debugger_frame(u32 down, u32 rep, bool touching, int px, int py) {
 /* entries of the "three dots" menu */
 static void menu_action(int item) {
 	BasicState st = basic_state();
-	/* 0 open (file browser), 1 save, 2 debugger, 3 sprites, 4 sounds, 5 exit */
-	if (item == 2) { open_debugger(); return; }
+	/* 0 open (file browser), 1 save, 2 versions, 3 debugger, 4 sprites, 5 sounds, 6 exit */
+	if (item == 3) { open_debugger(); return; }
 	if (st != BASIC_IDLE) { set_status(L("ERST DAS PROGRAMM BEENDEN", "STOP THE PROGRAM FIRST"), RED); return; }
 	helpOpen = false;
 	if (item == 0) open_browser();
-	else if (item == 3) open_sprite_editor(spred_slot());
-	else if (item == 4) open_sound_editor(snded_slot());
+	else if (item == 2) open_versions();
+	else if (item == 4) open_sprite_editor(spred_slot());
+	else if (item == 5) open_sound_editor(snded_slot());
 	else if (item == 1) {
 		/* save under the last name, or ask for one in the REPL */
 		if (basic_program_name()[0]) exec_line("SAVE");
@@ -1989,7 +2083,7 @@ static void menu_action(int item) {
 			if (!replActive) repl_prompt();
 			input_set("SAVE \"");
 		}
-	} else if (item == 5) exec_line("EXIT");      /* back to the title screen, the program stays */
+	} else if (item == 6) exec_line("EXIT");      /* back to the title screen, the program stays */
 }
 
 static void video_init(void) {
@@ -2115,7 +2209,7 @@ int main(int argc, char *argv[]) {
 
 		BasicState st = basic_state();
 		/* debugger: opens by itself at a breakpoint; input() needs the keyboard */
-		if (st == BASIC_PAUSED && !dbgOpen && !spredOpen && !sndedOpen && !browserOpen) open_debugger();
+		if (st == BASIC_PAUSED && !dbgOpen && !spredOpen && !sndedOpen && !browserOpen && !versOpen) open_debugger();
 		if (st == BASIC_INPUT && dbgOpen) { close_debugger(); dbgReopen = true; }
 		if (dbgReopen && (st == BASIC_RUNNING || st == BASIC_PAUSED || st == BASIC_IDLE)) {
 			dbgReopen = false;
@@ -2148,6 +2242,8 @@ int main(int argc, char *argv[]) {
 			debugger_frame(down, rep, touching, tp.px, tp.py);
 		} else if (browserOpen) {
 			browser_frame(down, rep, touching, tp.px, tp.py);
+		} else if (versOpen) {
+			versions_frame(down, rep, touching, tp.px, tp.py);
 		} else {
 			{
 				const char *names[BASIC_PROJECT_FILES];
@@ -2216,11 +2312,11 @@ int main(int argc, char *argv[]) {
 				/* file tab: open that file in the editor */
 				if (st == BASIC_IDLE) { select_file(k - KC_TAB); view = VIEW_EDIT; }
 			} else if (k == KC_MENU) {
-				const char *items[6] = { L("\x99" "ffnen", "Open"), L("Speichern", "Save"), "Debugger",
-				                         L("Sprite-Editor", "Sprite editor"), L("Sound-Editor", "Sound editor"), "Exit" };
-				static const unsigned char ic[6] = { KI_OPEN, KI_SAVE, KI_DEBUG, KI_SPRITE, KI_SOUND, KI_EXIT };
-				kbd_open_menu(items, ic, 6, 5);
-			} else if (k >= KC_MENU_ITEM && k < KC_MENU_ITEM + 6) {
+				const char *items[7] = { L("\x99" "ffnen", "Open"), L("Speichern", "Save"), L("Versionen", "Versions"),
+				                         "Debugger", L("Sprite-Editor", "Sprite editor"), L("Sound-Editor", "Sound editor"), "Exit" };
+				static const unsigned char ic[7] = { KI_OPEN, KI_SAVE, KI_VERSIONS, KI_DEBUG, KI_SPRITE, KI_SOUND, KI_EXIT };
+				kbd_open_menu(items, ic, 7, 6);
+			} else if (k >= KC_MENU_ITEM && k < KC_MENU_ITEM + 7) {
 				menu_action(k - KC_MENU_ITEM);
 			} else if (k == KC_BROWSER) {
 			if (st == BASIC_IDLE) { helpOpen = false; open_browser(); }
@@ -2273,7 +2369,7 @@ int main(int argc, char *argv[]) {
 				else if (k) ed_key(k, shoulder);
 			}
 		}
-		update_completion(dbgOpen || browserOpen || spredOpen || sndedOpen || edSwap);
+		update_completion(dbgOpen || browserOpen || versOpen || spredOpen || sndedOpen || edSwap);
 		/* program just finished? */
 		static BasicState prevState;
 		BasicState now = basic_state();
@@ -2299,6 +2395,8 @@ int main(int argc, char *argv[]) {
 			scr_upload(&varScr, -1, -1);
 		} else if (browserOpen) {
 			render_browser();
+		} else if (versOpen) {
+			render_versions();
 		} else if (helpOpen) {
 			render_help();
 			scr_upload(&helpScr, -1, -1);

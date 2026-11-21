@@ -1,0 +1,42 @@
+Error: Save the program first: SAVE "NAME"
+LOADED SPIEL (2 FILES)
+NO VERSIONS YET - COMMIT "TEXT"
+NO VERSIONS YET - COMMIT "TEXT"
+Error: Message missing: COMMIT "what changed"
+SAVED SPIEL (2 FILES)
+COMMITTED VERSION 1
+NOTHING TO COMMIT (SAME AS VERSION 1)
+CHANGES SINCE VERSION 1:
+M main.php
+Error: Uncommitted changes: COMMIT first or CHECKOUT 1 FORCE
+SAVED SPIEL (2 FILES)
+COMMITTED VERSION 2
+  2 MM-DD hh:mm zwei / mit x
+  1 MM-DD hh:mm start
+LOADED SPIEL (2 FILES)
+CHANGES SINCE VERSION 2:
+M main.php
+A neu.php
+D util.php
+== main.php
+-2 $b = 2;
++2 $b = 20;
+  ...
++8 $h = 8;
+== neu.php (new)
++1 // neu
+== util.php (deleted)
+Error: Uncommitted changes: COMMIT first or CHECKOUT 1 FORCE
+CHECKED OUT VERSION 1
+* main.php            8 LINES
+  util.php            1 LINE
+CHECKED OUT VERSION 1 (LATEST 2)
+NOTHING CHANGED SINCE VERSION 1
+  2 MM-DD hh:mm zwei / mit x
+  1 MM-DD hh:mm start
+== main.php
+-9 echo "x";
+Error: Version 9 not found
+Error: Bad version number
+DELETED SPIEL
+0 PROGRAMS

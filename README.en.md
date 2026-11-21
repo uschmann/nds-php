@@ -47,7 +47,7 @@ The top screen is either the **code editor** or the **REPL console**; `SCRN` swi
 | Capitals and second symbols (tap twice = lock) | `SHFT` | hold R (in the console also L) |
 | Code on the touch screen (select, rename …) | – | hold / tap L (in the editor) |
 | Paste / undo / redo | – | SELECT + X / Y / A (in the editor) |
-| Menu `⋮` (right of the tab bar): open (file browser), save, debugger, sprite editor, sound editor, exit (to the title screen) | – | – |
+| Menu `⋮` (right of the tab bar): open (file browser), save, versions, debugger, sprite editor, sound editor, exit (to the title screen) | – | – |
 | Sprite editor | – | X (in the REPL console) |
 | Sound editor | – | Y (in the REPL console) |
 
@@ -618,6 +618,32 @@ Without an SD card the interpreter reports `NO SD CARD` at start-up. Programs of
 
 In the melonDS emulator: enable SD emulation under *Config → Emu settings → DLDI*
 (optionally with "Sync SD to folder").
+
+### Versions
+
+A small version control in the spirit of Git keeps snapshots of a program. It needs a saved program
+(so `SAVE "NAME"` first):
+
+```
+COMMIT "text"     saves the program and keeps this state as a new version
+LOG               lists the versions: number, date (DS clock), text; green = current state
+STATUS            which files changed since the last version (M/A/D)
+DIFF / DIFF 3     changed lines compared with the last version or version 3 (+ new, - gone)
+CHECKOUT 3        loads version 3 into the editor; SAVE writes it to the program folder
+```
+
+With uncommitted changes `CHECKOUT` refuses to load; `CHECKOUT 3 FORCE` discards them. After a
+`CHECKOUT`, `STATUS` and `DIFF` refer to the loaded version, and a new `COMMIT` adds another version
+(the old ones are kept).
+
+It is more convenient in the menu `⋮` under **Versions**:
+- The list of versions is at the bottom, the diff of the selected one against the program on top.
+- **DIFF** shows the whole diff in the console.
+- **LOAD** brings the version into the editor and asks first if changes would be lost.
+- **COMMIT** asks for the text in the REPL.
+
+Everything lives in the hidden folder `.vc` inside the program folder: `log.txt` and a complete copy
+of the files per version (`.vc/0001/main.php` …). `DELETE` removes the versions too.
 
 ## Files and JSON
 

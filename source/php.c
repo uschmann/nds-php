@@ -6734,14 +6734,46 @@ static int is_dir(const char *path) {
 	return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
-/* write lines of file f (and for main.php the sprites and sounds) */
-static int write_file(const char *path, int f, int withAssets) {
-	FILE *fp = fopen(path, "w");
-	if (!fp) return 0;
-	int ok = fputs("<?php\n", fp) >= 0;
+static int vcBase;                  /* version the program was checked out from, 0 = latest */
+
+/* growing text without the string limit (whole files) */
+typedef struct { char *p; int n, cap; } TBuf;
+
+static int tbuf_add(TBuf *b, const char *t, int n) {
+	if (b->n + n + 1 > b->cap) {
+		int nc = b->cap ? b->cap * 2 : 1024;
+		while (nc < b->n + n + 1) nc *= 2;
+		char *q = realloc(b->p, nc);
+		if (!q) return 0;
+		b->p = q;
+		b->cap = nc;
+	}
+	memcpy(b->p + b->n, t, n);
+	b->n += n;
+	b->p[b->n] = 0;
+	return 1;
+}
+
+static int tbuf_printf(TBuf *b, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+static int tbuf_printf(TBuf *b, const char *fmt, ...) {
+	char t[LINE_MAX_LEN + 80];
+	va_list ap;
+	va_start(ap, fmt);
+	int n = vsnprintf(t, sizeof t, fmt, ap);
+	va_end(ap);
+	if (n < 0) return 0;
+	if (n >= (int)sizeof t) n = sizeof t - 1;
+	return tbuf_add(b, t, n);
+}
+
+/* text of file f as it is saved (main.php also gets the sprites and
+ * sounds as PHP comments: "#SPR n" + 64 chars, "#SND n inst tempo note:len ...").
+ * Returns a malloc'd string (caller frees) or NULL when out of memory. */
+static char *render_file(int f, int withAssets, int *len) {
+	TBuf b = { 0, 0, 0 };
+	int ok = tbuf_add(&b, "<?php\n", 6);
 	for (int i = 0; i < fileCount[f] && ok; i++)
-		ok = fprintf(fp, "%s\n", fileLines[f][i].text) > 0;
-	/* sprites and sounds as PHP comments: "#SPR n" + 64 chars, "#SND n inst tempo note:len ..." */
+		ok = tbuf_printf(&b, "%s\n", fileLines[f][i].text);
 	for (int sl = 0; withAssets && sl < BASIC_SPRITES && ok; sl++) {
 		char hex[65];
 		int used = 0;
@@ -6751,16 +6783,30 @@ static int write_file(const char *path, int f, int withAssets) {
 			used |= c >= 0;
 		}
 		hex[64] = 0;
-		if (used) ok = fprintf(fp, "#SPR %d %s\n", sl, hex) > 0;
+		if (used) ok = tbuf_printf(&b, "#SPR %d %s\n", sl, hex);
 	}
 	for (int sl = 0; withAssets && sl < BASIC_SOUNDS && ok; sl++) {
 		const BasicSound *sd = &sounds[sl];
 		if (!sd->count) continue;
-		ok = fprintf(fp, "#SND %d %d %d", sl, sd->inst, sd->tempo) > 0;
-		for (int k = 0; k < sd->count && ok; k++) ok = fprintf(fp, " %d:%d", sd->note[k], sd->len[k]) > 0;
-		if (ok) ok = fputc('\n', fp) != EOF;
+		ok = tbuf_printf(&b, "#SND %d %d %d", sl, sd->inst, sd->tempo);
+		for (int k = 0; k < sd->count && ok; k++) ok = tbuf_printf(&b, " %d:%d", sd->note[k], sd->len[k]);
+		if (ok) ok = tbuf_add(&b, "\n", 1);
 	}
+	if (!ok) { free(b.p); return NULL; }
+	*len = b.n;
+	return b.p;
+}
+
+/* write lines of file f (and for main.php the sprites and sounds) */
+static int write_file(const char *path, int f, int withAssets) {
+	int len;
+	char *t = render_file(f, withAssets, &len);
+	if (!t) return 0;
+	FILE *fp = fopen(path, "w");
+	if (!fp) { free(t); return 0; }
+	int ok = fwrite(t, 1, len, fp) == (size_t)len;
 	if (fclose(fp) != 0) ok = 0;
+	free(t);
 	return ok;
 }
 
@@ -6768,6 +6814,7 @@ static void cmd_save(const char *arg) {
 	char name[BASIC_NAME_BUF], path[160], fpath[200], msg[80];
 	int single = parse_target(arg, name, 1);
 	file_path(path, name);
+	if (strcmp(name, lastFile)) vcBase = 0;
 	if (single) {
 		if (nsrc > 1) fail("Programs with several files are saved as a folder: SAVE \"NAME\"");
 		if (!write_file(path, 0, 1)) fail("Disk error while saving %s", name);
@@ -6870,37 +6917,51 @@ static void read_file(FILE *fp, int f) {
 
 static int cmp_names(const void *x, const void *y) { return strcmp((const char *)x, (const char *)y); }
 
+/* the other .php files of a folder (lower case, sorted, without main.php) */
+static int folder_files(const char *path, char names[][BASIC_NAME_BUF]) {
+	int n = 0;
+	DIR *d = opendir(path);
+	if (!d) return -1;
+	struct dirent *e;
+	while ((e = readdir(d))) {
+		size_t l = strlen(e->d_name);
+		if (l < 5 || l > BASIC_NAME_MAX + 4 || strcasecmp(e->d_name + l - 4, ".php") || !strcasecmp(e->d_name, "main.php")) continue;
+		if (n >= MAX_SRC - 1) break;
+		for (size_t k = 0; k <= l; k++) names[n][k] = (char)tolower((unsigned char)e->d_name[k]);
+		n++;
+	}
+	closedir(d);
+	qsort(names, n, BASIC_NAME_BUF, cmp_names);
+	return n;
+}
+
+/* the program from a folder of .php files (a saved program or a version) */
+static void load_folder(const char *path, const char *name) {
+	static char names[MAX_SRC][BASIC_NAME_BUF];
+	char fpath[200];
+	int n = folder_files(path, names);
+	if (n < 0) fail("Cannot read %s", name);
+	clear_program();
+	for (int i = 0; i < n; i++) strcpy(fileNames[1 + i], names[i]);
+	nsrc = 1 + n;
+	for (int f = 0; f < nsrc; f++) {
+		snprintf(fpath, sizeof fpath, "%.150s/%.31s", path, fileNames[f]);
+		FILE *fp = fopen(fpath, "r");
+		if (!fp) continue;           /* a missing main.php stays empty */
+		read_file(fp, f);
+		fclose(fp);
+	}
+	filesVersion++;
+	basic_clear_breakpoints();
+}
+
 static void cmd_load(const char *arg) {
-	char name[BASIC_NAME_BUF], path[160], fpath[200], msg[80];
+	char name[BASIC_NAME_BUF], path[160], msg[80];
 	int single = parse_target(arg, name, 0);
 	file_path(path, name);
+	vcBase = 0;
 	if (!single && is_dir(path)) {
-		static char names[MAX_SRC][BASIC_NAME_BUF];
-		int n = 0;
-		DIR *d = opendir(path);
-		if (!d) fail("Cannot read %s", name);
-		struct dirent *e;
-		while ((e = readdir(d))) {
-			size_t l = strlen(e->d_name);
-			if (l < 5 || l > BASIC_NAME_MAX + 4 || strcasecmp(e->d_name + l - 4, ".php") || !strcasecmp(e->d_name, "main.php")) continue;
-			if (n >= MAX_SRC - 1) break;
-			for (size_t k = 0; k <= l; k++) names[n][k] = (char)tolower((unsigned char)e->d_name[k]);
-			n++;
-		}
-		closedir(d);
-		qsort(names, n, BASIC_NAME_BUF, cmp_names);
-		clear_program();
-		for (int i = 0; i < n; i++) strcpy(fileNames[1 + i], names[i]);
-		nsrc = 1 + n;
-		for (int f = 0; f < nsrc; f++) {
-			snprintf(fpath, sizeof fpath, "%.150s/%.31s", path, fileNames[f]);
-			FILE *fp = fopen(fpath, "r");
-			if (!fp) continue;           /* a missing main.php stays empty */
-			read_file(fp, f);
-			fclose(fp);
-		}
-		filesVersion++;
-	basic_clear_breakpoints();
+		load_folder(path, name);
 		modified = 0;
 		strcpy(lastFile, name);
 		snprintf(msg, sizeof msg, "LOADED %s (%d FILE%s)", name, nsrc, nsrc == 1 ? "" : "S");
@@ -6924,6 +6985,412 @@ static void cmd_load(const char *arg) {
 	modified = 0;
 	snprintf(msg, sizeof msg, "LOADED %s (%d LINE%s)", name, fileCount[0], fileCount[0] == 1 ? "" : "S");
 	message(msg);
+}
+
+/* ------------------------------------------------------------------ */
+/* versions: COMMIT LOG STATUS DIFF CHECKOUT                            */
+/* ------------------------------------------------------------------ */
+/* A program folder can have a hidden folder .vc/ with log.txt (one line
+ * "n|YYYY-MM-DD HH:MM|message" per version) and a full copy of the .php
+ * files of every version in 0001/, 0002/ ... Programs are small, so whole
+ * copies keep this simple and robust. */
+
+#define VC_MSG BASIC_VC_MSG
+#define VC_MAX 1000
+typedef struct { int n; char date[17]; char msg[VC_MSG + 1]; } VcEntry;
+static VcEntry vcLog[VC_MAX];
+
+enum { VC_GREEN = 5, VC_RED = 2, VC_ORANGE = 8, VC_CYAN = 3, VC_GREY = 12 };
+
+/* DIFF output goes to the screen, or into vcCap for the version panel */
+static TBuf *vcCap;
+static void vc_color(int c) { if (!vcCap && io->color) io->color(c); }
+static void vc_plain(void) { if (!vcCap && io->color) io->color(textColor); }
+static void vc_puts(const char *t) { if (vcCap) tbuf_add(vcCap, t, (int)strlen(t)); else outs(t); }
+
+/* path inside the .vc folder of the current program ("" = the folder) */
+static void vc_path(char *out, int size, const char *sub) {
+	snprintf(out, size, "%.127s/%.31s/.vc%s%.40s", storageDir, lastFile, *sub ? "/" : "", sub);
+}
+
+static void vc_snap_path(char *out, int size, int n) {
+	char sub[12];
+	snprintf(sub, sizeof sub, "%04d", n);
+	vc_path(out, size, sub);
+}
+
+static void vc_need_program(void) {
+	if (!storageDir[0]) fail("No storage (SD card) available");
+	if (!lastFile[0]) fail("Save the program first: SAVE \"NAME\"");
+}
+
+/* versions from log.txt into vcLog, oldest first; returns the count */
+static int vc_read_log(void) {
+	char path[200], raw[160];
+	vc_path(path, sizeof path, "log.txt");
+	FILE *fp = fopen(path, "r");
+	if (!fp) return 0;
+	int n = 0;
+	while (n < VC_MAX && fgets(raw, sizeof raw, fp)) {
+		raw[strcspn(raw, "\r\n")] = 0;
+		char *b1 = strchr(raw, '|'), *b2 = b1 ? strchr(b1 + 1, '|') : NULL;
+		if (!b2 || atoi(raw) <= 0) continue;
+		vcLog[n].n = atoi(raw);
+		snprintf(vcLog[n].date, sizeof vcLog[n].date, "%.*s", (int)(b2 - b1 - 1), b1 + 1);
+		snprintf(vcLog[n].msg, sizeof vcLog[n].msg, "%s", b2 + 1);
+		n++;
+	}
+	fclose(fp);
+	return n;
+}
+
+static int vc_last(void) {
+	int n = vc_read_log();
+	return n ? vcLog[n - 1].n : 0;
+}
+
+static int vc_exists(int v) {
+	char path[200];
+	vc_snap_path(path, sizeof path, v);
+	return v > 0 && is_dir(path);
+}
+
+static char *read_whole(const char *path, int *len) {
+	FILE *fp = fopen(path, "rb");
+	if (!fp) return NULL;
+	TBuf b = { 0, 0, 0 };
+	char t[512];
+	size_t r;
+	int ok = tbuf_add(&b, "", 0);
+	while (ok && (r = fread(t, 1, sizeof t, fp)) > 0) ok = tbuf_add(&b, t, (int)r);
+	fclose(fp);
+	if (!ok) { free(b.p); return NULL; }
+	*len = b.n;
+	return b.p;
+}
+
+static void vc_mark(int color, char kind, const char *name) {
+	vc_color(color);
+	out_ch(kind);
+	vc_plain();
+	out_ch(' ');
+	outs(name);
+	out_ch('\n');
+}
+
+/* program in memory against version v: prints "M main.php" (changed),
+ * "A x.php" (new), "D y.php" (deleted) when print; returns the count */
+static int vc_compare(int v, int print) {
+	char snap[200], fpath[240];
+	static char old[MAX_SRC][BASIC_NAME_BUF];
+	vc_snap_path(snap, sizeof snap, v);
+	int changes = 0;
+	for (int f = 0; f < nsrc; f++) {
+		snprintf(fpath, sizeof fpath, "%.200s/%.31s", snap, fileNames[f]);
+		int la = 0, lb;
+		char *a = read_whole(fpath, &la);
+		char *b = render_file(f, f == 0, &lb);
+		if (!b) { free(a); fail("Out of memory"); }
+		int kind = !a ? 'A' : (la != lb || memcmp(a, b, la)) ? 'M' : 0;
+		free(a);
+		free(b);
+		if (!kind) continue;
+		changes++;
+		if (print) vc_mark(kind == 'A' ? VC_GREEN : VC_ORANGE, (char)kind, fileNames[f]);
+	}
+	int n = folder_files(snap, old);
+	for (int i = 0; i < n; i++) {
+		if (find_src(old[i]) >= 0) continue;
+		changes++;
+		if (print) vc_mark(VC_RED, 'D', old[i]);
+	}
+	return changes;
+}
+
+/* COMMIT "message": save the program, then keep this state as a new version */
+static void cmd_commit(const char *arg) {
+	char msg[VC_MSG + 1], path[200], fpath[240], text[80];
+	vc_need_program();
+	while (*arg == ' ') arg++;
+	char q = (*arg == '"' || *arg == '\'') ? *arg++ : 0;
+	int n = 0;
+	for (; *arg && *arg != q && n < VC_MSG; arg++) msg[n++] = *arg == '|' ? '/' : *arg;
+	while (n > 0 && msg[n - 1] == ' ') n--;
+	msg[n] = 0;
+	if (!n) fail("Message missing: COMMIT \"what changed\"");
+	int last = vc_last();
+	if (last && vc_exists(last) && !vcBase && !vc_compare(last, 0)) {
+		snprintf(text, sizeof text, "NOTHING TO COMMIT (SAME AS VERSION %d)", last);
+		message(text);
+		return;
+	}
+	cmd_save("");
+	int v = last + 1;
+	vc_path(path, sizeof path, "");
+	mkdir(path, 0777);
+	vc_snap_path(path, sizeof path, v);
+	mkdir(path, 0777);
+	if (!is_dir(path)) fail("Cannot create the folder for version %d", v);
+	for (int f = 0; f < nsrc; f++) {
+		snprintf(fpath, sizeof fpath, "%.200s/%.31s", path, fileNames[f]);
+		if (!write_file(fpath, f, f == 0)) fail("Disk error while saving version %d", v);
+	}
+	time_t now = time(NULL);
+	struct tm *tm = localtime(&now);
+	vc_path(path, sizeof path, "log.txt");
+	FILE *fp = fopen(path, "a");
+	if (!fp) fail("Disk error while saving version %d", v);
+	int ok = fprintf(fp, "%d|%04d-%02d-%02d %02d:%02d|%s\n", v, tm ? tm->tm_year + 1900 : 2000, tm ? tm->tm_mon + 1 : 1,
+	                 tm ? tm->tm_mday : 1, tm ? tm->tm_hour : 0, tm ? tm->tm_min : 0, msg) > 0;
+	if (fclose(fp) != 0 || !ok) fail("Disk error while saving version %d", v);
+	vcBase = 0;
+	snprintf(text, sizeof text, "COMMITTED VERSION %d", v);
+	message(text);
+}
+
+/* LOG: versions, newest first; the one the program is based on in green */
+static void cmd_log(void) {
+	char t[16];
+	vc_need_program();
+	int n = vc_read_log();
+	if (!n) { message("NO VERSIONS YET - COMMIT \"TEXT\""); return; }
+	for (int i = n - 1; i >= 0; i--) {
+		vc_color(vcLog[i].n == vcBase || (!vcBase && i == n - 1) ? VC_GREEN : VC_ORANGE);
+		snprintf(t, sizeof t, "%3d ", vcLog[i].n);
+		outs(t);
+		vc_color(VC_GREY);
+		outs(vcLog[i].date + (strlen(vcLog[i].date) > 5 ? 5 : 0));      /* MM-DD HH:MM */
+		vc_plain();
+		out_ch(' ');
+		outs(vcLog[i].msg);
+		out_ch('\n');
+	}
+}
+
+/* version an operation refers to: the argument, else the checked out one */
+static int vc_target(const char *arg, int *force) {
+	while (*arg == ' ') arg++;
+	int v = 0;
+	if (isdigit((unsigned char)*arg)) { v = atoi(arg); while (isdigit((unsigned char)*arg)) arg++; }
+	while (*arg == ' ') arg++;
+	if (force) {
+		*force = !strncasecmp(arg, "FORCE", 5);
+		if (*arg && !*force) fail("Bad version number");
+	} else if (*arg) fail("Bad version number");
+	int last = vc_last();
+	if (!last) fail("No versions yet - COMMIT \"text\" creates one");
+	if (!v) v = vcBase ? vcBase : last;
+	if (!vc_exists(v)) fail("Version %d not found", v);
+	return v;
+}
+
+static void cmd_status(void) {
+	char t[64];
+	vc_need_program();
+	int last = vc_last();
+	if (!last) { message("NO VERSIONS YET - COMMIT \"TEXT\""); return; }
+	int v = vc_target("", NULL);
+	if (vcBase) { snprintf(t, sizeof t, "CHECKED OUT VERSION %d (LATEST %d)", vcBase, last); message(t); }
+	if (!vc_compare(v, 0)) { snprintf(t, sizeof t, "NOTHING CHANGED SINCE VERSION %d", v); message(t); return; }
+	snprintf(t, sizeof t, "CHANGES SINCE VERSION %d:", v);
+	message(t);
+	vc_compare(v, 1);
+}
+
+/* CHECKOUT n [FORCE]: the program of version n into the editor */
+static void cmd_checkout(const char *arg) {
+	char path[200], t[64], keep[BASIC_NAME_BUF];
+	int force;
+	vc_need_program();
+	int v = vc_target(arg, &force);
+	int base = vcBase ? vcBase : vc_last();
+	if (!force && vc_exists(base) && vc_compare(base, 0))
+		fail("Uncommitted changes: COMMIT first or CHECKOUT %d FORCE", v);
+	vc_snap_path(path, sizeof path, v);
+	strcpy(keep, lastFile);
+	memset(sprites, -1, sizeof sprites);
+	for (int k = 0; k < BASIC_OBJECTS; k++) objects[k].dirty = 1;
+	for (int k = 0; k < BASIC_SOUNDS; k++) basic_sound_clear(k);
+	load_folder(path, keep);
+	strcpy(lastFile, keep);
+	vcBase = v == vc_last() ? 0 : v;
+	modified = 1;
+	snprintf(t, sizeof t, "CHECKED OUT VERSION %d", v);
+	message(t);
+}
+
+/* --- DIFF: line diff (longest common subsequence) --- */
+
+typedef struct { int printed, gap; } DiffState;
+
+static void diff_line(DiffState *st, int kind, int num, const char *text) {
+	char t[16];
+	if (st->gap && st->printed) { vc_color(VC_GREY); vc_puts("  ...\n"); }
+	st->gap = 0;
+	st->printed = 1;
+	vc_color(kind == '+' ? VC_GREEN : VC_RED);
+	snprintf(t, sizeof t, "%c%d ", kind, num);
+	vc_puts(t);
+	vc_plain();
+	vc_puts(text);
+	vc_puts("\n");
+}
+
+/* prints the changes from a[0..na) to b[0..nb) */
+static void diff_lines(char **a, int na, char **b, int nb) {
+	int p = 0, s = 0;
+	while (p < na && p < nb && !strcmp(a[p], b[p])) p++;
+	while (s < na - p && s < nb - p && !strcmp(a[na - 1 - s], b[nb - 1 - s])) s++;
+	int n = na - p - s, m = nb - p - s;
+	DiffState st = { 0, 0 };
+	unsigned short *t = (long)(n + 1) * (m + 1) <= 250000L ? malloc((size_t)(n + 1) * (m + 1) * sizeof *t) : NULL;
+	if (!t) {                            /* too big: everything in between changed */
+		for (int i = 0; i < n; i++) diff_line(&st, '-', p + i + 1, a[p + i]);
+		for (int j = 0; j < m; j++) diff_line(&st, '+', p + j + 1, b[p + j]);
+		return;
+	}
+#define T(i, j) t[(i) * (m + 1) + (j)]
+	for (int i = n; i >= 0; i--)
+		for (int j = m; j >= 0; j--)
+			T(i, j) = (unsigned short)(i == n || j == m ? 0 : !strcmp(a[p + i], b[p + j]) ? T(i + 1, j + 1) + 1 :
+			          T(i + 1, j) > T(i, j + 1) ? T(i + 1, j) : T(i, j + 1));
+	int i = 0, j = 0;
+	while (i < n || j < m) {
+		if (i < n && j < m && !strcmp(a[p + i], b[p + j])) { i++; j++; st.gap = 1; }
+		else if (j == m || (i < n && T(i + 1, j) >= T(i, j + 1))) { diff_line(&st, '-', p + i + 1, a[p + i]); i++; }
+		else { diff_line(&st, '+', p + j + 1, b[p + j]); j++; }
+	}
+#undef T
+	free(t);
+}
+
+/* code lines of a saved file (without "<?php" and the sprite / sound
+ * lines, which go to *assets); the text is cut into lines in place */
+static int split_saved(char *text, char ***out, char **assets) {
+	int cap = 64, n = 0, first = 1;
+	char **v = malloc(cap * sizeof *v);
+	TBuf as = { 0, 0, 0 };
+	if (!v || !tbuf_add(&as, "", 0)) { free(v); free(as.p); return -1; }
+	for (char *ln = text; ln && *ln; first = 0) {
+		char *nl = strchr(ln, '\n');
+		if (nl) *nl = 0;
+		if (!strncmp(ln, "#SPR ", 5) || !strncmp(ln, "#SND ", 5)) {
+			if (!tbuf_add(&as, ln, (int)strlen(ln)) || !tbuf_add(&as, "\n", 1)) { free(v); free(as.p); return -1; }
+		} else if (!(first && !strcmp(ln, "<?php"))) {
+			if (n >= cap) {
+				char **q = realloc(v, (cap *= 2) * sizeof *v);
+				if (!q) { free(v); free(as.p); return -1; }
+				v = q;
+			}
+			v[n++] = ln;
+		}
+		ln = nl ? nl + 1 : NULL;
+	}
+	*out = v;
+	*assets = as.p;
+	return n;
+}
+
+static void cmd_diff(const char *arg) {
+	char snap[200], fpath[240], t[64];
+	static char old[MAX_SRC][BASIC_NAME_BUF];
+	vc_need_program();
+	int v = vc_target(arg, NULL), any = 0;
+	vc_snap_path(snap, sizeof snap, v);
+	for (int f = 0; f < nsrc; f++) {
+		snprintf(fpath, sizeof fpath, "%.200s/%.31s", snap, fileNames[f]);
+		int la = 0, lb;
+		char *a = read_whole(fpath, &la);
+		char *b = render_file(f, f == 0, &lb);
+		if (!b) { free(a); fail("Out of memory"); }
+		if (a && la == lb && !memcmp(a, b, la)) { free(a); free(b); continue; }
+		char **al = NULL, **bl = NULL, *aa = NULL, *ba = NULL;
+		int na = a ? split_saved(a, &al, &aa) : 0, nb = split_saved(b, &bl, &ba);
+		if (na < 0 || nb < 0) { free(al); free(bl); free(aa); free(ba); free(a); free(b); fail("Out of memory"); }
+		vc_color(VC_CYAN);
+		vc_puts("== ");
+		vc_puts(fileNames[f]);
+		vc_puts(a ? "\n" : " (new)\n");
+		vc_plain();
+		diff_lines(al, na, bl, nb);
+		if (f == 0 && strcmp(aa ? aa : "", ba ? ba : "")) { vc_color(VC_GREY); vc_puts("  sprites/sounds changed\n"); vc_plain(); }
+		any = 1;
+		free(al); free(bl); free(aa); free(ba); free(a); free(b);
+	}
+	int n = folder_files(snap, old);
+	for (int i = 0; i < n; i++) {
+		if (find_src(old[i]) >= 0) continue;
+		vc_color(VC_RED);
+		vc_puts("== ");
+		vc_puts(old[i]);
+		vc_puts(" (deleted)\n");
+		vc_plain();
+		any = 1;
+	}
+	if (!any) {
+		snprintf(t, sizeof t, "NO DIFFERENCES TO VERSION %d", v);
+		if (vcCap) vc_puts(t); else message(t);
+	}
+}
+
+/* DIFF of version v as text for the version panel ("+3 code", "-3 code",
+ * "== file", "  ..."); on an error its message. Returns 1 when ok. */
+int basic_vc_diff(int v, char *out, int size) {
+	if (state != BASIC_IDLE || size < 1) return 0;
+	TBuf b = { 0, 0, 0 };
+	jmp_buf outer;
+	int ok = 0;
+	memcpy(outer, errjmp, sizeof outer);
+	vcCap = &b;
+	if (!setjmp(errjmp)) {
+		char a[12];
+		snprintf(a, sizeof a, "%d", v);
+		cmd_diff(a);
+		ok = 1;
+	}
+	vcCap = NULL;
+	memcpy(errjmp, outer, sizeof outer);
+	snprintf(out, size, "%s", ok ? (b.p ? b.p : "") : errText);
+	free(b.p);
+	return ok;
+}
+
+/* for the frontend's version list: newest first; -1 without a saved program */
+int basic_vc_list(BasicVersion *out, int max) {
+	if (!storageDir[0] || !lastFile[0]) return -1;
+	int n = vc_read_log(), k = 0;
+	for (int i = n - 1; i >= 0 && k < max; i--, k++) {
+		out[k].num = vcLog[i].n;
+		strcpy(out[k].date, vcLog[i].date);
+		strcpy(out[k].msg, vcLog[i].msg);
+	}
+	return k;
+}
+int basic_vc_base(void) { return vcBase; }
+
+/* removes a folder and everything in it (the .vc folder of a program) */
+static void remove_tree(const char *path, int depth) {
+	char names[32][40], sub[240];
+	for (;;) {
+		DIR *d = opendir(path);
+		if (!d) break;
+		int n = 0;
+		struct dirent *e;
+		while ((e = readdir(d)) && n < 32)
+			if (strcmp(e->d_name, ".") && strcmp(e->d_name, "..") && strlen(e->d_name) < 40) strcpy(names[n++], e->d_name);
+		closedir(d);
+		if (!n) break;
+		int removed = 0;
+		for (int i = 0; i < n; i++) {
+			snprintf(sub, sizeof sub, "%.190s/%.39s", path, names[i]);
+			if (depth < 3 && is_dir(sub)) remove_tree(sub, depth + 1);
+			else remove(sub);
+			struct stat st;
+			removed += stat(sub, &st) != 0;
+		}
+		if (!removed) break;               /* nothing could be deleted: give up */
+	}
+	rmdir(path);
 }
 
 /* saved programs: project folders ("NAME") and old single files
@@ -7015,6 +7482,8 @@ static void cmd_delete(const char *arg) {
 				if (e->d_name[0] != '.' && strlen(e->d_name) < 16) strcpy(names[n++], e->d_name);
 			closedir(d);
 		}
+		snprintf(fpath, sizeof fpath, "%.150s/.vc", path);     /* its versions */
+		if (is_dir(fpath)) remove_tree(fpath, 0);
 		for (int i = 0; i < n; i++) {
 			snprintf(fpath, sizeof fpath, "%.150s/%.31s", path, names[i]);
 			remove(fpath);
@@ -7199,7 +7668,7 @@ static void run_pending(void) {
 	const char *s = pendingCmd, *arg;
 	state = BASIC_IDLE;
 	if (bare_command(s, "RUN")) { cmd_run(); return; }
-	if (bare_command(s, "NEW")) { clear_program(); return; }
+	if (bare_command(s, "NEW")) { clear_program(); vcBase = 0; return; }
 	if (bare_command(s, "CLR")) { clear_globals(0); return; }
 	if ((arg = command_arg(s, "LIST"))) { cmd_list(arg); return; }
 	if ((arg = command_arg(s, "SAVE"))) { cmd_save(arg); return; }
@@ -7211,6 +7680,11 @@ static void run_pending(void) {
 	if (bare_command(s, "FILES")) { cmd_files(); return; }
 	if ((arg = command_arg(s, "RMFILE"))) { cmd_rmfile(arg); return; }
 	if ((arg = command_arg(s, "RENAME"))) { cmd_rename(arg); return; }
+	if ((arg = command_arg(s, "COMMIT"))) { cmd_commit(arg); return; }
+	if (bare_command(s, "LOG")) { cmd_log(); return; }
+	if (bare_command(s, "STATUS")) { cmd_status(); return; }
+	if ((arg = command_arg(s, "DIFF"))) { cmd_diff(arg); return; }
+	if ((arg = command_arg(s, "CHECKOUT"))) { cmd_checkout(arg); return; }
 	cmd_direct(s);
 }
 

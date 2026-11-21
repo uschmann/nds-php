@@ -105,6 +105,22 @@ test-types: basic
 	diff -u test_types.expected test.out && echo "types test passed"
 	rm -f test.out
 
+# versions: COMMIT / LOG / STATUS / DIFF / CHECKOUT on a prepared program folder
+test-vc: basic
+	rm -rf vc.tmp && mkdir -p vc.tmp/SPIEL
+	printf '<?php\n$$a = 1;\n$$b = 2;\n$$c = 3;\n$$d = 4;\n$$e = 5;\n$$f = 6;\n$$g = 7;\necho $$a + $$b;\n' > vc.tmp/SPIEL/main.php
+	printf '<?php\nfunction hilfe() { return 1; }\n' > vc.tmp/SPIEL/util.php
+	(echo LOG; echo 'LOAD "SPIEL"'; echo LOG; echo STATUS; echo 'COMMIT'; echo 'COMMIT "start"'; echo 'COMMIT "noch mal"'; \
+	 echo '10 echo "x";'; echo STATUS; echo 'CHECKOUT 1'; echo 'COMMIT "zwei | mit x"'; echo LOG) | BASIC_DIR=vc.tmp ./basic > test.out
+	printf '<?php\n$$a = 1;\n$$b = 20;\n$$c = 3;\n$$d = 4;\n$$e = 5;\n$$f = 6;\n$$g = 7;\n$$h = 8;\necho $$a + $$b;\n' > vc.tmp/SPIEL/main.php
+	rm vc.tmp/SPIEL/util.php && printf '<?php\n// neu\n' > vc.tmp/SPIEL/neu.php
+	(echo 'LOAD "SPIEL"'; echo STATUS; echo 'DIFF 1'; echo 'CHECKOUT 1'; echo 'CHECKOUT 1 FORCE'; echo FILES; echo STATUS; \
+	 echo LOG; echo 'DIFF 2'; echo 'CHECKOUT 9'; echo 'DIFF x'; echo 'DELETE "SPIEL"'; echo DIR) | BASIC_DIR=vc.tmp ./basic >> test.out
+	ls -A vc.tmp >> test.out
+	sed -i 's/[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]/MM-DD hh:mm/' test.out
+	diff -u test_vc.expected test.out && echo "version test passed"
+	rm -rf test.out vc.tmp
+
 test-modern: basic
 	(cat test_modern.txt; echo RUN; echo 'new Suit();'; echo '$$s->name = "x";'; echo 'echo Dir::from(1);'; \
 	 echo 'echo Suit::Clubs;'; echo '$$x = clone Suit::Hearts;'; echo 'echo match(3) { 1, 2 => "a" };'; \

@@ -48,7 +48,7 @@ zwischen beiden.
 | Großbuchstaben und Zweitbelegung (2× tippen = Lock) | `SHFT` | R halten (in der Konsole auch L) |
 | Code auf den Touchscreen (markieren, umbenennen …) | – | L halten / antippen (im Editor) |
 | Einfügen / rückgängig / wiederholen | – | SELECT + X / Y / A (im Editor) |
-| Menü `⋮` (rechts in der Reiterleiste): Öffnen (Dateibrowser), Speichern, Debugger, Sprite-Editor, Sound-Editor, Exit (zum Titelbild) | – | – |
+| Menü `⋮` (rechts in der Reiterleiste): Öffnen (Dateibrowser), Speichern, Versionen, Debugger, Sprite-Editor, Sound-Editor, Exit (zum Titelbild) | – | – |
 | Sprite-Editor | – | X (in der REPL-Konsole) |
 | Sound-Editor | – | Y (in der REPL-Konsole) |
 
@@ -632,6 +632,32 @@ Ohne SD-Karte meldet der Interpreter beim Start `NO SD CARD`. Programme aus ält
 
 Im Emulator melonDS: unter *Config → Emu settings → DLDI* die SD-Emulation aktivieren
 (optional mit „Sync SD to folder“).
+
+### Versionen
+
+Eine kleine Versionskontrolle nach dem Vorbild von Git hält Zwischenstände eines Programms fest. Sie
+braucht ein gespeichertes Programm (also erst `SAVE "NAME"`):
+
+```
+COMMIT "Text"     speichert das Programm und hält diesen Stand als neue Version fest
+LOG               listet die Versionen: Nummer, Datum (DS-Uhr), Text; grün = aktueller Stand
+STATUS            welche Dateien sich seit der letzten Version geändert haben (M/A/D)
+DIFF / DIFF 3     geänderte Zeilen gegenüber der letzten Version bzw. Version 3 (+ neu, - weg)
+CHECKOUT 3        lädt Version 3 in den Editor; erst SAVE schreibt sie in den Programmordner
+```
+
+Bei nicht festgehaltenen Änderungen verweigert `CHECKOUT` das Laden; `CHECKOUT 3 FORCE` verwirft
+sie. Nach einem `CHECKOUT` beziehen sich `STATUS` und `DIFF` auf die geladene Version, ein neues
+`COMMIT` hängt eine weitere Version an (die alten bleiben erhalten).
+
+Bequemer geht es im Menü `⋮` unter **Versionen**:
+- Unten steht die Liste der Versionen, oben der Diff der gewählten Version zum aktuellen Stand.
+- **DIFF** zeigt den ganzen Diff in der Konsole.
+- **LADEN** holt die Version in den Editor und fragt vorher, wenn Änderungen verloren gingen.
+- **COMMIT** fragt in der REPL nach dem Text.
+
+Gespeichert wird im versteckten Ordner `.vc` im Programmordner: `log.txt` und pro Version eine
+vollständige Kopie der Dateien (`.vc/0001/main.php` …). `DELETE` löscht die Versionen mit.
 
 ## Dateien und JSON
 

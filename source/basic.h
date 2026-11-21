@@ -108,6 +108,14 @@ int         basic_modified(void);        /* program changed since LOAD/SAVE */
 #define BASIC_NAME_BUF  32      /* buffer for a name + ".php" + 0        */
 #define BASIC_MAX_FILES 64
 int         basic_list_files(char names[][BASIC_NAME_BUF], int max);
+/* versions of the current program (COMMIT / LOG / CHECKOUT), newest first;
+ * -1 when the program has not been saved yet */
+#define BASIC_VC_MSG 40
+typedef struct { int num; char date[17]; char msg[BASIC_VC_MSG + 1]; } BasicVersion;
+int         basic_vc_list(BasicVersion *out, int max);
+int         basic_vc_base(void);        /* checked out version, 0 = latest */
+/* DIFF of version v against the program as text ("+3 code" ...); 0 on error */
+int         basic_vc_diff(int v, char *out, int size);
 
 #define BASIC_LINE_MAX  255     /* characters per program line          */
 #define BASIC_MAX_LINES 1000
