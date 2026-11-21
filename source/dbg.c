@@ -11,6 +11,9 @@
 #include "draw.h"
 #include "basic.h"
 #include "lang.h"
+#include "syntax.h"
+
+extern const u16 basicPalette[16];     /* main.c: colours of the top screen */
 
 #define HDR_H   22
 #define STAT_Y  26
@@ -115,10 +118,13 @@ static void draw_row(int r) {
 	snprintf(num, sizeof num, "%3d", (idx + 1) % 1000);
 	draw_text(11, y + 1, num, here ? COL_ACCENT : COL_MUTED, 1);
 	if (here) draw_glyph(35, y + 1, 0x1a, COL_ACCENT, 1);      /* arrow */
+	/* the code with the editor's colours (palette of the top screen) */
 	const char *t = basic_file_line_text(file, idx);
-	char buf[28];
-	snprintf(buf, sizeof buf, "%.26s", t);
-	draw_text(44, y + 1, buf, COL_TEXT, 1);
+	int l = (int)strlen(t);
+	unsigned char col[BASIC_LINE_MAX + 1];
+	syntax_highlight(t, l, col);
+	for (int i = 0; i < l && i < 26; i++)
+		if (t[i] != ' ') draw_glyph(44 + i * 8, y + 1, (unsigned char)t[i], basicPalette[col[i] & 15] | BIT(15), 1);
 }
 
 static void draw_code(void) {

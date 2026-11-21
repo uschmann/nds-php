@@ -26,6 +26,7 @@
 #include "lang.h"
 #include "dbg.h"
 #include "complete.h"
+#include "syntax.h"
 
 #define COLS 32
 #define ROWS 24
@@ -255,13 +256,12 @@ static bool input_key(int k) {
 
 /* draw the input buffer into a screen starting at (x,y); returns cursor pos */
 static bool inputCode;             /* REPL prompt: colour the input like code */
-static void highlight(const char *t, int l, u8 *col);
 
 static void input_draw(Screen *s, int x, int y, int clearLen, int *cx, int *cy) {
 	int pos = y * COLS + x;
 	u8 colors[INPUT_MAX + 1];
 	if (inputCode) {
-		highlight(inbuf, inlen, colors);
+		syntax_highlight(inbuf, inlen, colors);
 		/* REPL commands (RUN, SAVE "X" ...) in the keyword colour */
 		static const char *const cmds[] = { "RUN", "NEW", "CLR", "LIST", "SAVE", "LOAD", "DIR", "DELETE",
 		                                    "EXIT", "EDIT", "FILES", "RMFILE", "RENAME", "SPRED", "SNDED", NULL };
@@ -585,111 +585,6 @@ static void ed_key(int k, bool shifted) {
 	ed_scroll();
 }
 
-/* --- syntax colours --- */
-
-static bool is_keyword(const char *w, int n) {
-	static const char *const kw[] = {
-		"echo", "print", "if", "else", "elseif", "while", "do", "for", "foreach", "as", "switch",
-		"case", "default", "break", "continue", "function", "return", "global", "true", "false",
-		"null", "and", "or", "xor", "isset", "unset", "empty", "exit", "die", "array",
-		"require", "require_once", "include", "include_once", "class", "interface", "trait",
-		"extends", "implements", "new", "clone", "instanceof", "public", "protected", "private",
-		"static", "abstract", "final", "const", "use", "self", "parent", "readonly",
-		"try", "catch", "finally", "throw", "match", "enum", "fn", NULL
-	};
-	for (int i = 0; kw[i]; i++)
-		if ((int)strlen(kw[i]) == n && !strncasecmp(kw[i], w, n)) return true;
-	return false;
-}
-
-static bool ident_ch(char c) { return isalnum((unsigned char)c) || c == '_'; }
-
-static bool is_type_name(const char *w, int n) {
-	static const char *const ty[] = { "int", "float", "string", "bool", "array", "void", "mixed",
-	                                  "callable", "iterable", "object", "never", NULL };
-	for (int i = 0; ty[i]; i++)
-		if ((int)strlen(ty[i]) == n && !strncasecmp(ty[i], w, n)) return true;
-	return false;
-}
-
-/* colour of the word t[i..j) from its neighbours: keyword, Class (also
- * Enum, Exception), CONSTANT / Enum::Case, named argument "name:" */
-static u8 word_color(const char *t, int l, int i, int j) {
-	int n = j - i, k = j;
-	while (k < l && t[k] == ' ') k++;
-	int p = i - 1;
-	while (p >= 0 && t[p] == ' ') p--;
-	bool afterColons = i >= 2 && t[i - 1] == ':' && t[i - 2] == ':';
-	bool beforeColons = k + 1 < l && t[k] == ':' && t[k + 1] == ':';
-	bool call = k < l && t[k] == '(';
-	if (afterColons) return call ? TEXTCOL : BLUE;            /* Suit::Hearts, X::CONST */
-	if (is_keyword(t + i, n)) return RED;
-	/* name: value in a call (not "a ? b : c", not "::") */
-	if (k < l && t[k] == ':' && !beforeColons && p >= 0 && (t[p] == '(' || t[p] == ',')) return BROWN;
-	if (beforeColons) return CYAN;                            /* Class::  */
-	/* new Name(...), instanceof Name */
-	if (p >= 2) {
-		int e = p + 1, b = e;
-		while (b > 0 && ident_ch(t[b - 1])) b--;
-		if ((e - b == 3 && !strncasecmp(t + b, "new", 3)) || (e - b == 10 && !strncasecmp(t + b, "instanceof", 10))) return CYAN;
-	}
-	if (!call && p >= 0 && t[p] == ':' && (p == 0 || t[p - 1] != ':') && is_type_name(t + i, n)) return CYAN;
-	bool upper = false, lower = false;
-	for (int q = i; q < j; q++) {
-		if (isupper((unsigned char)t[q])) upper = true;
-		else if (islower((unsigned char)t[q])) lower = true;
-	}
-	if (upper && !lower && n > 1) return BLUE;                /* PHP_EOL, JOY_A */
-	if (isupper((unsigned char)t[i]) && lower && !call) return CYAN;   /* Exception, Suit */
-	if (is_type_name(t + i, n) && k < l && t[k] == '$') return CYAN;   /* int $x */
-	return TEXTCOL;
-}
-
-static void highlight(const char *t, int l, u8 *col) {
-	int i = 0;
-	while (i < l) {
-		char c = t[i];
-		if (c == '#' || (c == '/' && t[i + 1] == '/')) { while (i < l) col[i++] = GREY; break; }
-		if (c == '/' && t[i + 1] == '*') {
-			int j = i + 2;
-			while (j < l && !(t[j] == '*' && t[j + 1] == '/')) j++;
-			j = j < l ? j + 2 : l;
-			while (i < j) col[i++] = GREY;
-			continue;
-		}
-		if (c == '"' || c == '\'') {
-			col[i++] = GREEN;
-			while (i < l && t[i] != c) {
-				if (t[i] == '\\' && i + 1 < l) col[i++] = GREEN;
-				col[i++] = GREEN;
-			}
-			if (i < l) col[i++] = GREEN;
-			continue;
-		}
-		if (c == '$' && i + 1 < l && (isalpha((unsigned char)t[i + 1]) || t[i + 1] == '_')) {
-			col[i++] = PURPLE;
-			while (i < l && ident_ch(t[i])) col[i++] = PURPLE;
-			continue;
-		}
-		if (c == '\\' && i + 1 < l && (isalpha((unsigned char)t[i + 1]) || t[i + 1] == '_')) {
-			col[i++] = CYAN;                       /* \Exception */
-			continue;
-		}
-		if (isalpha((unsigned char)c) || c == '_') {
-			int j = i;
-			while (j < l && ident_ch(t[j])) j++;
-			u8 k = word_color(t, l, i, j);
-			while (i < j) col[i++] = k;
-			continue;
-		}
-		if (isdigit((unsigned char)c)) {
-			while (i < l && (isalnum((unsigned char)t[i]) || t[i] == '.')) col[i++] = ORANGE;
-			continue;
-		}
-		col[i++] = TEXTCOL;
-	}
-}
-
 static void render_edit(int *cx, int *cy) {
 	char buf[40];
 	u8 colors[BASIC_LINE_MAX + 1];
@@ -725,7 +620,7 @@ static void render_edit(int *cx, int *cy) {
 	while (row < CODE_TOP + CODE_ROWS && line < n) {
 		const char *t = basic_line_text(line);
 		int l = (int)strlen(t), rows = l / tw + 1;
-		highlight(t, l, colors);
+		syntax_highlight(t, l, colors);
 		for (; sub < rows && row < CODE_TOP + CODE_ROWS; sub++, row++) {
 			if (sub == 0) {
 				snprintf(buf, sizeof buf, "%*d", gw - 1, line + 1);
@@ -917,7 +812,7 @@ static void render_browser(void) {
 	for (int i = 0; i < n && i < ROWS - 2; i++) {
 		const char *t = browser_preview_line(i);
 		int l = (int)strlen(t);
-		highlight(t, l, colors);
+		syntax_highlight(t, l, colors);
 		for (int c = 0; c < l && c < COLS; c++) scr_put(&brScr, c, 1 + i, t[c], colors[c], NOFILL);
 	}
 	scr_text(&brScr, 0, ROWS - 1, L("A:\x99" "FFNEN/LADEN  B:ZUR\x9a" "CK", "A:OPEN/LOAD  B:BACK"), FOOT_FG, FOOT_BG);
