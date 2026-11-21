@@ -57,6 +57,25 @@ man sie nicht. Lange Zeilen werden umbrochen. Nach einer Zeile, die mit `{` ende
 Zeichen weiter ein, eine `}` auf einer sonst leeren Zeile rückt wieder aus. Bricht ein Programm mit
 einem Fehler ab, steht der Cursor beim Zurückwechseln in der Fehlerzeile.
 
+**Autovervollständigung:** Beim Tippen im Editor und an der REPL erscheinen über der Tastatur
+antippbare Vorschläge, darunter die Signatur des ersten (bei eingebauten Funktionen aus der Hilfe,
+bei eigenen mit ihren Parametern). Ein Tipp übernimmt den Vorschlag; Funktionen bekommen gleich ihre
+`(`. Die R-Schultertaste allein gedrückt und losgelassen übernimmt den ersten Vorschlag, der Pfeil
+rechts blättert weiter. Was vorgeschlagen wird, hängt vom Text vor dem Cursor ab:
+
+| Vor dem Cursor | Vorschläge |
+|---|---|
+| ein Wort ab 2 Buchstaben | eigene und eingebaute Funktionen, Klassen, Schlüsselwörter, Konstanten, Snippets |
+| `$…` | Variablen des Programms |
+| `->…` | Methoden und Eigenschaften der Klassen des Programms |
+| `Klasse::…` | Konstanten, Enum-Fälle und Methoden dieser Klasse, bei Enums `cases`/`from`/`tryFrom` |
+| `new `, `instanceof `, `catch (`, `extends ` | eigene Klassen und die eingebauten Exceptions |
+
+Snippets setzen ganze Konstrukte ein und stellen den Cursor an die richtige Stelle: `fe` →
+`foreach ($ as $v) {`, `fo` → `for`, `wh` → `while`, `if`, `sw` → `switch`, `ma` → `match`, `fn` →
+`function () {`, `tc` → `try { } catch (Exception $e) { }`. Zuletzt übernommene Vorschläge stehen
+vorn, danach eigene Namen vor eingebauten. In Strings und Kommentaren gibt es keine Vorschläge.
+
 **REPL-Konsole:** Sie zeigt die Ausgabe der Programme und hat einen Prompt `>`, an dem man einzelne
 PHP-Anweisungen sofort ausführt (`echo 2 + 3;`, `$x = strlen("abc");`) oder Befehle wie `RUN`,
 `SAVE "NAME"` und `LOAD "NAME"` eingibt. ↑↓ holen frühere Eingaben zurück. `START` bzw. `RUN`

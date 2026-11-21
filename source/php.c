@@ -5985,20 +5985,21 @@ static void define_user_const(const char *name, Value v) {
 	userConsts[nuserConsts++].v = v;
 }
 
+static const struct { const char *n; int v; } ints[] = {
+	{ "PHP_INT_MAX", 2147483647 }, { "PHP_INT_MIN", -2147483647 - 1 }, { "PHP_INT_SIZE", 4 },
+	{ "ARRAY_FILTER_USE_BOTH", 1 }, { "ARRAY_FILTER_USE_KEY", 2 },
+	{ "STR_PAD_LEFT", 0 }, { "STR_PAD_RIGHT", 1 }, { "STR_PAD_BOTH", 2 },
+	{ "JOY_UP", 1 }, { "JOY_DOWN", 2 }, { "JOY_LEFT", 4 }, { "JOY_RIGHT", 8 }, { "JOY_A", 16 },
+	{ "JOY_B", 32 }, { "JOY_X", 64 }, { "JOY_Y", 128 }, { "JOY_L", 256 }, { "JOY_R", 512 },
+	{ "WAVE_SQ12", 0 }, { "WAVE_SQ25", 1 }, { "WAVE_SQ50", 2 }, { "WAVE_NOISE", 3 },
+	{ "FILE_IGNORE_NEW_LINES", 2 }, { "FILE_SKIP_EMPTY_LINES", 4 }, { "FILE_APPEND", 8 },
+	{ "JSON_UNESCAPED_SLASHES", 64 }, { "JSON_PRETTY_PRINT", 128 },
+	{ NULL, 0 }
+};
+
 static int find_constant(const char *name, Value *out) {
 	for (int i = 0; i < nuserConsts; i++)
 		if (!strcmp(userConsts[i].name, name)) { *out = userConsts[i].v; retain(*out); return 1; }
-	static const struct { const char *n; int v; } ints[] = {
-		{ "PHP_INT_MAX", 2147483647 }, { "PHP_INT_MIN", -2147483647 - 1 }, { "PHP_INT_SIZE", 4 },
-		{ "ARRAY_FILTER_USE_BOTH", 1 }, { "ARRAY_FILTER_USE_KEY", 2 },
-		{ "STR_PAD_LEFT", 0 }, { "STR_PAD_RIGHT", 1 }, { "STR_PAD_BOTH", 2 },
-		{ "JOY_UP", 1 }, { "JOY_DOWN", 2 }, { "JOY_LEFT", 4 }, { "JOY_RIGHT", 8 }, { "JOY_A", 16 },
-		{ "JOY_B", 32 }, { "JOY_X", 64 }, { "JOY_Y", 128 }, { "JOY_L", 256 }, { "JOY_R", 512 },
-		{ "WAVE_SQ12", 0 }, { "WAVE_SQ25", 1 }, { "WAVE_SQ50", 2 }, { "WAVE_NOISE", 3 },
-		{ "FILE_IGNORE_NEW_LINES", 2 }, { "FILE_SKIP_EMPTY_LINES", 4 }, { "FILE_APPEND", 8 },
-		{ "JSON_UNESCAPED_SLASHES", 64 }, { "JSON_PRETTY_PRINT", 128 },
-		{ NULL, 0 }
-	};
 	for (int i = 0; ints[i].n; i++) if (!strcmp(ints[i].n, name)) { *out = mk_int(ints[i].v); return 1; }
 	if (!strcmp(name, "PHP_EOL")) { *out = mk_str("\n", 1); return 1; }
 	if (!strcmp(name, "M_PI")) { *out = mk_float(3.14159265f); return 1; }
@@ -7001,4 +7002,28 @@ int basic_debug_vars(BasicVar *out, int max) {
 int basic_file_line_count(int f) { return f >= 0 && f < nsrc ? fileCount[f] : 0; }
 const char *basic_file_line_text(int f, int i) {
 	return f >= 0 && f < nsrc && i >= 0 && i < fileCount[f] ? fileLines[f][i].text : "";
+}
+
+/* ------------------------------------------------------------------ */
+/* lists for the editor's autocompletion                               */
+/* ------------------------------------------------------------------ */
+
+int basic_builtin_count(void) {
+	int n = 0;
+	while (n < (int)(sizeof builtins / sizeof builtins[0]) && builtins[n].name) n++;
+	return n;
+}
+const char *basic_builtin_name(int i) { return builtins[i].name; }
+void basic_builtin_args(int i, int *mn, int *mx) { *mn = builtins[i].minA; *mx = builtins[i].maxA; }
+
+static const char *const otherConsts[] = { "PHP_EOL", "M_PI", "PHP_VERSION" };
+int basic_constant_count(void) {
+	int n = 0;
+	while (ints[n].n) n++;
+	return n + 3;
+}
+const char *basic_constant_name(int i) {
+	int n = 0;
+	while (ints[n].n) n++;
+	return i < n ? ints[i].n : otherConsts[i - n];
 }

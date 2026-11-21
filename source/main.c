@@ -25,6 +25,7 @@
 #include "browser.h"
 #include "lang.h"
 #include "dbg.h"
+#include "complete.h"
 
 #define COLS 32
 #define ROWS 24
@@ -1156,6 +1157,69 @@ static void sound_editor_frame(u32 down, u32 rep, bool touching, int px, int py)
 /* debugger: panel on the bottom screen, variables on the top screen   */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* autocompletion: suggestion chips above the keyboard                 */
+/* ------------------------------------------------------------------ */
+
+static Completion comp[COMPLETE_MAX];
+static int  ncomp, compWord, compPage, compShown, compCtx = -1;
+static char compBefore[BASIC_LINE_MAX + 1];
+
+/* where typing goes: 1 editor, 2 REPL prompt, 0 nowhere */
+static int typing_context(void) {
+	if (basic_state() != BASIC_IDLE || helpOpen || browserOpen || spredOpen || sndedOpen) return 0;
+	if (view == VIEW_EDIT) return 1;
+	if (view == VIEW_OUTPUT && replActive) return 2;
+	return 0;
+}
+
+static void show_suggestions(void) {
+	const char *labels[COMPLETE_MAX];
+	for (int i = compPage; i < ncomp; i++) labels[i - compPage] = comp[i].label;
+	compShown = kbd_set_suggestions(labels, ncomp - compPage, comp[compPage].hint, compPage > 0);
+}
+
+static void update_completion(bool otherScreen) {
+	int ctx = otherScreen ? 0 : typing_context();
+	char before[BASIC_LINE_MAX + 1] = "";
+	if (ctx == 1 && curLine < basic_line_count()) {
+		const char *t = basic_line_text(curLine);
+		snprintf(before, sizeof before, "%.*s", curCol, t);
+	} else if (ctx == 2) snprintf(before, sizeof before, "%.*s", incur, inbuf);
+	if (ctx == compCtx && !strcmp(before, compBefore)) return;
+	compCtx = ctx;
+	strcpy(compBefore, before);
+	ncomp = ctx ? complete_find(before, comp, COMPLETE_MAX, &compWord) : 0;
+	compPage = 0;
+	if (otherScreen) kbd_drop_suggestions();
+	else if (ncomp) show_suggestions();
+	else kbd_set_suggestions(NULL, 0, NULL, false);
+}
+
+static void type_into(int ctx, int k) {
+	if (ctx == 1) ed_key(k, false);
+	else input_key(k);
+}
+
+static void accept_completion(int i) {
+	int ctx = typing_context();
+	if (!ctx || i < 0 || i >= ncomp) return;
+	Completion *c = &comp[i];
+	for (int n = 0; n < compWord; n++) type_into(ctx, KC_DEL);
+	for (const char *p = c->insert; *p; p++) type_into(ctx, (unsigned char)*p);
+	for (int n = 0; n < c->back; n++) type_into(ctx, KC_LEFT);
+	complete_used(c->label);
+	compCtx = -1;                         /* look again */
+}
+
+static void completion_key(int k) {
+	if (k == KC_SUGG_MORE) {
+		compPage += compShown;
+		if (compPage >= ncomp) compPage = 0;
+		show_suggestions();
+	} else accept_completion(compPage + k - KC_SUGG);
+}
+
 #define MAX_VARS 96
 static bool dbgOpen, dbgReopen, varShowOutput;
 static int  varTop;
@@ -1327,6 +1391,7 @@ int main(int argc, char *argv[]) {
 	(void)argc; (void)argv;
 	lang_init();
 	help_init(langDE);
+	complete_set_help(helpText, helpLineCount);
 	keysSetRepeat(20, 4);
 	scr_clear(&term, TEXTCOL);
 	term_puts("**** NDS PHP V1.0 ****");
@@ -1404,6 +1469,12 @@ int main(int argc, char *argv[]) {
 		bool kbdTouch = touching && !(screensSwapped && st == BASIC_RUNNING);
 		int k = kbd_poll(kbdTouch, tp.px, tp.py, shoulder);
 
+			/* suggestion chips; R released on its own takes the first one */
+			static bool rUsed;
+			if (down & KEY_R) rUsed = false;
+			if (k && (held & KEY_R)) rUsed = true;
+			if (k >= KC_SUGG && k <= KC_SUGG_MORE) { completion_key(k); k = KC_NONE; }
+			else if ((keysUp() & KEY_R) && !rUsed && ncomp && typing_context()) accept_completion(compPage);
 			if (down & KEY_START) k = KC_RUN;
 			if (rep & KEY_LEFT) k = KC_LEFT;
 			if (rep & KEY_RIGHT) k = KC_RIGHT;
@@ -1466,6 +1537,7 @@ int main(int argc, char *argv[]) {
 				else if (k) ed_key(k, shoulder);
 			}
 		}
+		update_completion(dbgOpen || browserOpen || spredOpen || sndedOpen);
 		/* program just finished? */
 		static BasicState prevState;
 		BasicState now = basic_state();

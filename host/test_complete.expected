@@ -1,0 +1,20 @@
+[st] word=2: strangeHelper static stamp str_contains str_ends_with str_pad str_repeat str_replace str_starts_with strcasecmp  | strangeHelper($a, $b) -> "strangeHelper(" back 0
+[echo str_p] word=5: str_pad STR_PAD_BOTH STR_PAD_LEFT STR_PAD_RIGHT  | str_pad($s,n,c) -> "str_pad(" back 0
+[$pl] word=2: playerCount players  |  -> "playerCount" back 0
+[$p->] word=0: __construct addPoints color name score  | __construct(public int $score  -> "__construct(" back 0
+[$p->add] word=3: addPoints  | addPoints($n, $bonus = 0) -> "addPoints(" back 0
+[Suit::] word=0: cases color from Hearts Spades tryFrom WILD class  | cases(): alle F„lle / all cases -> "cases(" back 0
+[Suit::H] word=1: Hearts  | enum case -> "Hearts" back 0
+[$x = new ] word=0: Player Suit ArgumentCountError ArithmeticError BadFunctionCallExceptio BadMethodCallException DivisionByZeroError DomainException Error ErrorException  |  -> "Player" back 0
+[$x = new Inv] word=3: InvalidArgumentExceptio  |  -> "InvalidArgumentException" back 0
+[} catch (Run] word=3: RuntimeException  |  -> "RuntimeException" back 0
+[fe] word=2: foreach()  | foreach ($ as $v) { -> "foreach ($ as $v) {" back 9
+[tc] word=2: try/catch  | try {  } catch (Exception $e) {  } -> "try {  } catch (Exception $e) {  }" back 28
+[fore] word=4: foreach() foreach  | foreach ($ as $v) { -> "foreach ($ as $v) {" back 9
+[JOY_] word=4: JOY_A JOY_B JOY_DOWN JOY_L JOY_LEFT JOY_R JOY_RIGHT JOY_UP JOY_X JOY_Y  |  -> "JOY_A" back 0
+[echo "st] word=2:
+[// st] word=2:
+[1] word=1:
+[s] word=1:
+[count] word=5: count  | count($a) -> "count(" back 0
+[st] word=2: strtoupper strangeHelper static stamp str_contains str_ends_with str_pad str_repeat str_replace str_starts_with  | strtoupper(1) -> "strtoupper(" back 0

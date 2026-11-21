@@ -1,5 +1,6 @@
 /* kbd.c - retro on-screen keyboard, drawn into the sub engine bitmap */
 #include <nds.h>
+#include <stdio.h>
 #include <string.h>
 #include "kbd.h"
 #include "draw.h"
@@ -199,23 +200,79 @@ static void draw_frame(void) {
 
 static char status1[33] = "READY.", status2[33] = "";
 
+/* autocompletion chips shown in the status card */
+#define SUGG_MAX 8
+static char suggLabel[SUGG_MAX][24], suggHint[36];
+static int  suggN, suggX[SUGG_MAX + 1], suggW[SUGG_MAX + 1];
+static bool suggMore;
+#define SUGG_Y 29
+#define SUGG_H 13
 
-/* status card with a red accent bar */
+
+/* status card with a red accent bar, or the suggestion chips */
 static void draw_status(void) {
 	fill(4, 26, 248, 30, COL_LINE);
 	fill(5, 27, 246, 28, COL_CARD);
 	fill(4, 26, 1, 1, COL_PAGE); fill(251, 26, 1, 1, COL_PAGE);
 	fill(4, 55, 1, 1, COL_PAGE); fill(251, 55, 1, 1, COL_PAGE);
 	fill(5, 27, 3, 28, COL_ACCENT);
+	if (suggN) {
+		for (int i = 0; i < suggN; i++) {
+			fill(suggX[i], SUGG_Y, suggW[i], SUGG_H, i == 0 ? COL_TINT : COL_KEY_FN);
+			text(suggX[i] + 4, SUGG_Y + 3, suggLabel[i], i == 0 ? COL_ACCENT : COL_TEXT, 1);
+		}
+		if (suggMore) {
+			fill(suggX[suggN], SUGG_Y, suggW[suggN], SUGG_H, COL_KEY_FN);
+			glyph(suggX[suggN] + 3, SUGG_Y + 3, 0x10, COL_ACCENT, 1);     /* arrow */
+		}
+		text(13, 44, suggHint, COL_MUTED, 1);
+		return;
+	}
 	text(13, 30, status1, COL_TEXT, 1);
 	text(13, 42, status2, COL_MUTED, 1);
+}
+
+int kbd_set_suggestions(const char *const *labels, int n, const char *hint, bool more) {
+	/* lay the chips out left to right as long as they fit */
+	int x = 12, shown = 0;
+	const int right = 249 - (more ? 16 : 0);
+	for (int i = 0; i < n && shown < SUGG_MAX; i++) {
+		int w = (int)strlen(labels[i]) * 8 + 8;
+		if (w > 200) w = 200;
+		if (x + w > right && shown > 0) { more = true; break; }
+		snprintf(suggLabel[shown], sizeof suggLabel[0], "%.*s", (w - 8) / 8, labels[i]);
+		suggX[shown] = x;
+		suggW[shown] = w;
+		x += w + 3;
+		shown++;
+	}
+	if (shown < n) more = true;
+	bool changed = shown != suggN || more != suggMore || strncmp(hint ? hint : "", suggHint, 29);
+	for (int i = 0; i < shown && !changed; i++) changed = strcmp(suggLabel[i], labels[i]) != 0;
+	suggN = shown;
+	suggMore = more && shown > 0;
+	suggX[suggN] = 235;
+	suggW[suggN] = 14;
+	snprintf(suggHint, sizeof suggHint, "%.29s", hint ? hint : "");
+	if (changed) draw_status();
+	return shown;
+}
+
+void kbd_drop_suggestions(void) { suggN = 0; suggMore = false; }
+
+static int hit_sugg(int px, int py) {
+	if (!suggN || py < SUGG_Y - 3 || py > SUGG_Y + SUGG_H + 3) return KC_NONE;
+	for (int i = 0; i < suggN; i++)
+		if (px >= suggX[i] - 1 && px < suggX[i] + suggW[i] + 2) return KC_SUGG + i;
+	if (suggMore && px >= suggX[suggN] - 2) return KC_SUGG_MORE;
+	return KC_NONE;
 }
 
 void kbd_set_status(const char *l1, const char *l2) {
 	if (!strncmp(l1, status1, 29) && !strncmp(l2, status2, 29)) return;
 	strncpy(status1, l1, 29); status1[29] = 0;
 	strncpy(status2, l2, 29); status2[29] = 0;
-	draw_status();
+	if (!suggN) draw_status();
 }
 
 void kbd_set_running(bool r) {
@@ -298,7 +355,7 @@ int kbd_poll(bool touching, int px, int py, bool extShift) {
 				draw_key(k);
 				result = emit(k);
 			} else {
-				result = hit_tab(px, py);
+				result = py < 22 ? hit_tab(px, py) : hit_sugg(px, py);
 				pressed = -2;    /* touched outside: ignore until release */
 			}
 		} else if (pressed >= 0) {

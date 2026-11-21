@@ -107,5 +107,14 @@ test-modern: basic
 	diff -u test_modern.expected test.out && echo "modern test passed"
 	rm -f test.out
 
+# autocompletion engine: suggestions for several cursor positions
+tcomp: test_complete.c ../source/php.c ../source/complete.c ../source/complete.h ../source/basic.h
+	$(CC) $(CFLAGS) -Wno-missing-field-initializers -o $@ test_complete.c ../source/php.c ../source/complete.c -lm
+
+test-complete: tcomp
+	./tcomp > test.out
+	diff -u test_complete.expected test.out && echo "completion test passed"
+	rm -f test.out
+
 clean:
-	rm -f basic test.out
+	rm -f basic tcomp test.out

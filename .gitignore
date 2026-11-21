@@ -3,3 +3,4 @@ build/
 *.nds
 host/basic
 _site/
+host/tcomp

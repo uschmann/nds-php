@@ -150,4 +150,11 @@ int         basic_debug_vars(BasicVar *out, int max);  /* locals, then globals *
 int         basic_file_line_count(int file);
 const char *basic_file_line_text(int file, int index);
 
+/* names for the editor's autocompletion */
+int         basic_builtin_count(void);
+const char *basic_builtin_name(int i);
+void        basic_builtin_args(int i, int *minArgs, int *maxArgs);   /* max -1 = any */
+int         basic_constant_count(void);
+const char *basic_constant_name(int i);
+
 #endif

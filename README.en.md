@@ -56,6 +56,25 @@ lines wrap. After a line ending in `{`, `RET` indents two more characters, and a
 empty line indents back. When a program stops with an error, the cursor sits on the error line when
 you switch back.
 
+**Autocompletion:** While typing in the editor and at the REPL, tappable suggestions appear above
+the keyboard, with the signature of the first one below (taken from the help page for built-in
+functions, with their parameters for your own). Tapping takes a suggestion; functions get their
+`(` right away. Pressing and releasing the R shoulder button on its own takes the first suggestion,
+the arrow on the right shows more. What is suggested depends on the text before the cursor:
+
+| Before the cursor | Suggestions |
+|---|---|
+| a word of 2+ letters | own and built-in functions, classes, keywords, constants, snippets |
+| `$…` | the program's variables |
+| `->…` | methods and properties of the program's classes |
+| `Class::…` | constants, enum cases and methods of that class, `cases`/`from`/`tryFrom` for enums |
+| `new `, `instanceof `, `catch (`, `extends ` | your classes and the built-in exceptions |
+
+Snippets insert whole constructs and put the cursor in the right place: `fe` →
+`foreach ($ as $v) {`, `fo` → `for`, `wh` → `while`, `if`, `sw` → `switch`, `ma` → `match`, `fn` →
+`function () {`, `tc` → `try { } catch (Exception $e) { }`. Recently taken suggestions come first,
+then your own names before built-in ones. There are no suggestions inside strings and comments.
+
 **REPL console:** it shows the program output and has a `>` prompt where you run single PHP
 statements right away (`echo 2 + 3;`, `$x = strlen("abc");`) or type commands such as `RUN`,
 `SAVE "NAME"` and `LOAD "NAME"`. ↑↓ bring back earlier input. `START` or `RUN` start the program from
