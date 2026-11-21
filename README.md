@@ -108,9 +108,10 @@ Unterstützt werden:
 * **Closures und Arrow Functions** (`function () use ($x) { … }`, `fn ($x) => …`) – siehe unten
 * **Klassen, Interfaces und Traits** – siehe unten
 * **Exceptions** (`try`/`catch`/`finally`, `throw`) – siehe unten
+* **PHP 8:** `match`, `enum` und Named Arguments – siehe unten
 
-Nicht dabei sind u. a. Referenzen (`&`), statische Variablen in Funktionen, `match`
-und Namespaces. Schlüsselwörter und Funktionsnamen sind wie in PHP unabhängig von Groß-/Kleinschreibung,
+Nicht dabei sind u. a. Referenzen (`&`), statische Variablen in Funktionen und
+Namespaces (ein führendes `\` wie in `\Exception` ist erlaubt). Schlüsselwörter und Funktionsnamen sind wie in PHP unabhängig von Groß-/Kleinschreibung,
 Variablen nicht. Zahlen mit Komma sind auf dem DS `float` mit einfacher Genauigkeit.
 
 In der **REPL** bleiben die Variablen und Funktionen des letzten `RUN` erhalten
@@ -166,6 +167,46 @@ var_dump($c instanceof Shape);              // bool(true)
 Klassen werden im Programm deklariert (nicht in der REPL), dürfen aber in jeder Datei stehen und
 vor oder nach ihrer Verwendung kommen. Andere magische Methoden als `__construct` und
 `__toString` gibt es nicht.
+
+### match, enum und Named Arguments
+
+`match` vergleicht streng (`===`), liefert einen Wert und kennt mehrere Bedingungen pro Zweig.
+Passt nichts und fehlt `default`, gibt es einen `UnhandledMatchError`:
+
+```php
+echo match ($note) { 1, 2 => "gut", 3, 4 => "ok", default => "naja" };
+$text = match (true) { $temp < 0 => "Frost", $temp < 20 => "frisch", default => "warm" };
+```
+
+Enums gibt es als reine und als hinterlegte Variante (`int` oder `string`), mit Methoden,
+Konstanten, statischen Methoden und Interfaces. Jeder Fall ist ein Objekt, das es nur einmal gibt
+(`===` vergleicht also Fälle):
+
+```php
+enum Farbe: string {
+  case Rot = 'r';
+  case Gruen = 'g';
+  public function hell(): bool { return $this === self::Gruen; }
+}
+$f = Farbe::from('r');                  // Farbe::Rot, tryFrom() liefert null statt Fehler
+echo $f->name, " ", $f->value;          // Rot r
+foreach (Farbe::cases() as $c) echo $c->name;
+echo match ($f) { Farbe::Rot => "stopp", Farbe::Gruen => "los" };
+```
+
+`name` und `value` sind nur lesbar; Enums lassen sich nicht mit `new` erzeugen. `json_encode()`
+schreibt bei hinterlegten Enums den Wert. Alle Enums erfüllen `UnitEnum`, hinterlegte zusätzlich
+`BackedEnum`.
+
+**Named Arguments** übergeben Werte per Parametername, auch gemischt mit normalen Argumenten davor;
+ausgelassene optionale Parameter behalten ihren Standardwert. Das geht bei eigenen Funktionen,
+Methoden, Konstruktoren und Closures (nicht bei eingebauten Funktionen):
+
+```php
+function karte(string $farbe = 'H', int $wert = 1, bool $bild = false) { ... }
+karte(wert: 12, bild: true);
+$p = new Punkt(y: 5);
+```
 
 ### Exceptions
 

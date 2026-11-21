@@ -1,0 +1,42 @@
+10 enum Suit: string {
+20   case Hearts = 'H';
+30   case Spades = 'S';
+40   case Diamonds = 'D';
+50   const Wild = 'joker';
+60   public function color(): string {
+70     return match($this) { self::Hearts, self::Diamonds => 'Red', self::Spades => 'Black' };
+80   }
+90   public static function fromChar(string $c): self { return self::from($c); }
+100   public function label(): string { return ucfirst(strtolower($this->name)); }
+110 }
+120 enum Dir { case Up; case Down; }
+130 interface HasArea { public function area(): float; }
+140 enum Shape: int implements HasArea {
+150   case Unit = 1;
+160   case Double = 2;
+170   public function area(): float { return $this->value * 1.5; }
+180 }
+190 $s = Suit::Hearts;
+200 echo $s->name, " ", $s->value, " ", $s->color(), " ", Suit::Spades->color(), " ", $s->label(), PHP_EOL;
+210 var_dump($s === Suit::Hearts, $s === Suit::Spades, $s == Suit::Hearts, $s instanceof Suit, $s instanceof UnitEnum, $s instanceof BackedEnum, Dir::Up instanceof BackedEnum);
+220 echo implode(",", array_map(fn($c) => $c->name, Suit::cases())), " ", count(Dir::cases()), PHP_EOL;
+230 echo Suit::from('S')->name, " ", Suit::tryFrom('X') === null ? "null" : "?", " ", Suit::fromChar('D')->name, " ", Suit::Wild, PHP_EOL;
+240 echo Shape::from("2")->area(), " ", Shape::tryFrom(1)->name, " ", Shape::Unit instanceof HasArea ? "area" : "", PHP_EOL;
+250 var_dump(Dir::Down); print_r(Suit::Hearts); echo PHP_EOL;
+260 echo json_encode(['suit' => Suit::Spades, 'shape' => Shape::Double]), PHP_EOL;
+270 function describe(Dir $d) { return match($d) { Dir::Up => "going up", Dir::Down => "going down" }; }
+280 echo describe(Dir::Down), " ", gettype(Dir::Up), " ", get_class(Dir::Up), PHP_EOL;
+290 try { Suit::from('Z'); } catch (ValueError $e) { echo get_class($e), ": ", $e->getMessage(), PHP_EOL; }
+300 $counts = []; foreach ([Suit::Hearts, Suit::Spades, Suit::Hearts] as $c) { $counts[$c->value] = ($counts[$c->value] ?? 0) + 1; } print_r($counts);
+310 function card(string $suit = 'H', int $rank = 1, bool $face = false) { return "$rank$suit" . ($face ? "*" : ""); }
+320 echo card(rank: 12, face: true), " ", card('S', face: false), " ", card(suit: Suit::Diamonds->value), PHP_EOL;
+330 echo match(true) { Suit::Hearts->color() === 'Red' => "red heart", default => "?" }, PHP_EOL;
+340 function greet($name, $greeting = "Hello", $punct = "!") { return "$greeting, $name$punct"; }
+350 echo greet("Ada"), " | ", greet(punct: "?", name: "Bob"), " | ", greet("Cy", punct: "."), PHP_EOL;
+360 class P { public function __construct(public $x = 0, public $y = 0) {} public function move(int $dx = 0, int $dy = 0) { return new P($this->x + $dx, $this->y + $dy); } }
+370 $p = new P(y: 5); $q = $p->move(dy: 2); echo $p->x, ",", $p->y, " ", $q->x, ",", $q->y, PHP_EOL;
+380 $f = fn($a, $b = 2, $c = 3) => "$a$b$c"; echo $f(c: 9, a: 1), " ", call_user_func($f, 4), PHP_EOL;
+390 foreach ([1, 2, 3, 5, "x", 2.0] as $v) echo match($v) { 1, 2 => "small", 3 => "three", "x" => "ex", default => "other" }, " ";
+400 echo PHP_EOL;
+410 try { echo match(99) { 1 => "a" }; } catch (\UnhandledMatchError $e) { echo get_class($e), ": ", $e->getMessage(), PHP_EOL; }
+420 $r = match("b") { "a" => 1, "b" => 2, }; echo $r * 10, PHP_EOL;

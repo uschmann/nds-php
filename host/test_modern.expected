@@ -1,0 +1,48 @@
+Hearts H Red Black Hearts
+bool(true)
+bool(false)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(false)
+Hearts,Spades,Diamonds 2
+Spades null Diamonds joker
+3 Unit area
+enum(Dir::Down)
+Suit Enum
+(
+    [name] => Hearts
+    [value] => H
+)
+
+{"suit":"S","shape":2}
+going down object Dir
+ValueError: "Z" is not a valid backing value for enum Suit
+Array
+(
+    [H] => 2
+    [S] => 1
+)
+12H* 1S 1D
+red heart
+Hello, Ada! | Hello, Bob? | Hello, Cy.
+0,5 0,7
+129 423
+small small three other ex other 
+UnhandledMatchError: Unhandled match case 99
+20
+Error: Cannot instantiate enum Suit
+Error: Cannot modify readonly property Suit::$name
+Error: Call to undefined method Dir::from()
+Error: Undefined constant Suit::Clubs
+Error: Trying to clone an uncloneable object of class Suit
+Error: Uncaught UnhandledMatchError: Unhandled match case 3
+Error: Unknown named parameter $colour
+Parse error: Named argument $rank given twice
+Error: Too few arguments to greet(): $name not passed
+Error: Named parameter $name overwrites previous argument
+Parse error: Cannot use positional argument after named argument
+Parse error: Named arguments are not supported for built-in functions like strlen()
+Parse error: Match expressions may only contain one default arm
+Error: Object of class Suit could not be converted to string

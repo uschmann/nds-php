@@ -97,5 +97,15 @@ test-dbg: basic
 	diff -u test_dbg.expected test.out && echo "debugger test passed"
 	rm -f test.out
 
+# match, enums, named arguments
+test-modern: basic
+	(cat test_modern.txt; echo RUN; echo 'new Suit();'; echo '$$s->name = "x";'; echo 'echo Dir::from(1);'; \
+	 echo 'echo Suit::Clubs;'; echo '$$x = clone Suit::Hearts;'; echo 'echo match(3) { 1, 2 => "a" };'; \
+	 echo 'echo card(colour: "x");'; echo 'echo card(rank: 1, rank: 2);'; echo 'echo greet(punct: 1);'; \
+	 echo 'echo greet("a", name: "b");'; echo 'echo greet(name: "a", "b");'; echo 'echo strlen(string: "x");'; \
+	 echo 'echo match(1) { default => 1, default => 2 };'; echo 'echo Suit::Hearts;') | ./basic > test.out
+	diff -u test_modern.expected test.out && echo "modern test passed"
+	rm -f test.out
+
 clean:
 	rm -f basic test.out

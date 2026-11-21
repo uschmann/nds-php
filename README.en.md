@@ -106,9 +106,10 @@ Supported:
 * **Closures and arrow functions** (`function () use ($x) { … }`, `fn ($x) => …`) – see below
 * **Classes, interfaces and traits** – see below
 * **Exceptions** (`try`/`catch`/`finally`, `throw`) – see below
+* **PHP 8:** `match`, `enum` and named arguments – see below
 
-Not included are, among others, references (`&`), static variables in functions, `match`
-and namespaces. As in PHP, keywords and function names are case-insensitive, variables are not.
+Not included are, among others, references (`&`), static variables in functions and
+namespaces (a leading `\` as in `\Exception` is allowed). As in PHP, keywords and function names are case-insensitive, variables are not.
 Numbers with a decimal point are single-precision `float` on the DS.
 
 In the **REPL** the variables and functions of the last `RUN` are kept
@@ -162,6 +163,44 @@ var_dump($c instanceof Shape);              // bool(true)
 
 Classes are declared in the program (not in the REPL), but may live in any file and come before or
 after their use. There are no magic methods other than `__construct` and `__toString`.
+
+### match, enum and named arguments
+
+`match` compares strictly (`===`), returns a value and allows several conditions per arm. If
+nothing matches and there is no `default`, it throws an `UnhandledMatchError`:
+
+```php
+echo match ($grade) { 1, 2 => "good", 3, 4 => "ok", default => "meh" };
+$text = match (true) { $temp < 0 => "frost", $temp < 20 => "fresh", default => "warm" };
+```
+
+Enums come pure or backed (`int` or `string`), with methods, constants, static methods and
+interfaces. Every case is an object that exists only once (so `===` compares cases):
+
+```php
+enum Colour: string {
+  case Red = 'r';
+  case Green = 'g';
+  public function light(): bool { return $this === self::Green; }
+}
+$c = Colour::from('r');                 // Colour::Red, tryFrom() returns null instead of an error
+echo $c->name, " ", $c->value;          // Red r
+foreach (Colour::cases() as $x) echo $x->name;
+echo match ($c) { Colour::Red => "stop", Colour::Green => "go" };
+```
+
+`name` and `value` are read-only; enums cannot be created with `new`. `json_encode()` writes the
+value of backed enums. All enums implement `UnitEnum`, backed ones also `BackedEnum`.
+
+**Named arguments** pass values by parameter name, also after ordinary arguments; optional
+parameters left out keep their default. This works for your own functions, methods, constructors
+and closures (not for built-in functions):
+
+```php
+function card(string $suit = 'H', int $rank = 1, bool $face = false) { ... }
+card(rank: 12, face: true);
+$p = new Point(y: 5);
+```
 
 ### Exceptions
 

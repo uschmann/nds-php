@@ -321,9 +321,15 @@ typedef struct { char name[NAME_MAX_LEN + 1]; Value val; unsigned char vis, isSt
 typedef struct { char name[NAME_MAX_LEN + 1]; int func; unsigned char vis, isStatic, isAbstract; short decl; } CMethod;
 typedef struct { char name[NAME_MAX_LEN + 1]; Value val; } CConst;
 
+/* enum case: name, backing value (null for pure enums), the singleton */
+typedef struct { char name[NAME_MAX_LEN + 1]; Value val, obj; } EnumCase;
+
 typedef struct {
 	char name[NAME_MAX_LEN + 1];
 	int  kind, isAbstract, defined, line, firstUse;
+	int  isEnum, enumType;        /* enumType: 0 pure, 1 int, 2 string */
+	EnumCase *cases;
+	int  ncases;
 	char parentName[NAME_MAX_LEN + 1];
 	char ifaceNames[CLIST_MAX][NAME_MAX_LEN + 1];
 	int  nifaces;
@@ -361,6 +367,8 @@ static void free_class(Class *k) {
 	for (int i = 0; i < k->nownC; i++) release(k->ownC[i].val);
 	for (int i = 0; i < k->nprops; i++) release(k->props[i].val);
 	for (int i = 0; i < k->nconsts; i++) release(k->consts[i].val);
+	for (int i = 0; i < k->ncases; i++) { release(k->cases[i].val); release(k->cases[i].obj); }
+	free(k->cases);
 	free(k->props);
 	free(k->methods);
 	free(k->consts);
@@ -908,6 +916,8 @@ static void lex(Tok *t) {
 		t->t = TK_VAR;
 		return;
 	}
+	/* \Name: the global namespace (there are no others) */
+	if (c == '\\' && (isalpha((unsigned char)s[lpos + 1]) || s[lpos + 1] == '_')) c = s[++lpos];
 	/* identifier / keyword */
 	if (isalpha((unsigned char)c) || c == '_') {
 		while (isalnum((unsigned char)s[lpos]) || s[lpos] == '_') {
@@ -1054,7 +1064,8 @@ enum {
 	OP_ENDTRY,                    /* remove the innermost handler              */
 	OP_THROW,                     /* throw the value on the stack              */
 	OP_EXCMATCH,                  /* class depth: push (exception instanceof class) */
-	OP_JSR, OP_RETSUB             /* call / return from a finally block        */
+	OP_JSR, OP_RETSUB,            /* call / return from a finally block        */
+	OP_ARGNAMES                   /* names: argument names for the next call   */
 };
 
 /* class references in the bytecode: index, or these for self / static / parent */
@@ -1096,6 +1107,7 @@ static int progCode, progConst, progFuncs, progClasses;
 static int keepCode, keepConst, keepFuncs, closuresMade;
 static int directCompile;          /* compiling a REPL line */
 static int compilingPrelude;       /* compiling the built-in classes */
+static int compilingEnum;          /* compile_class() reads an enum   */
 
 static int compiling;
 
@@ -1314,6 +1326,9 @@ static char included[BASIC_PROJECT_FILES];
 static void rvalue_postfix(void);
 static void call_args(int *argc);
 static void compile_closure(int arrow);
+static void compile_match(void);
+static void emit_argnames(void);
+static int argNamesConst = -1;
 
 /* path behind a variable: [key] and ->prop elements are pushed on the
  * stack. A method call in the chain turns it into a value (the result is
@@ -1349,6 +1364,7 @@ static int parse_path(VarRef r, int *nkeys, int *hasAppend) {
 				emit(OP_LOAD); emit(r.scope); emit(r.slot); emit(*nkeys);
 				int argc;
 				call_args(&argc);
+				emit_argnames();
 				emit(OP_MCALL); emit(add_const(mk_cstr(name))); emit(argc);
 				rvalue_postfix();
 				return 1;
@@ -1441,6 +1457,7 @@ static void rvalue_postfix(void) {
 		if (is_op("(")) {                      /* call of a closure or callable */
 			int argc;
 			call_args(&argc);
+			emit_argnames();
 			emit2(OP_CALLV, argc);
 			continue;
 		}
@@ -1468,6 +1485,7 @@ static void rvalue_postfix(void) {
 			if (is_op("(")) {
 				int argc;
 				call_args(&argc);
+				emit_argnames();
 				emit(OP_MCALL); emit(add_const(mk_cstr(name))); emit(argc);
 			} else {
 				emit_const(mk_pname(name));
@@ -1580,17 +1598,45 @@ static void compile_interp(const char *raw, int len, int line) {
 #undef BEGIN_PART
 }
 
+/* arguments; named ones (name: value) leave a constant array of names
+ * (null = positional) in argNamesConst for emit_argnames() */
+
 static void call_args(int *argc) {
 	expect("(");
 	*argc = 0;
+	Value names = mk_null();
 	if (!is_op(")")) {
 		do {
 			if (is_op(")")) break;      /* trailing comma */
+			if (tok.t == TK_ID && peek()->t == TK_OP && !strcmp(peek()->s, ":")) {
+				if (names.t == T_NULL) {
+					names = mk_arr();
+					for (int i = 0; i < *argc; i++) arr_push(names.u.a, mk_null());
+				}
+				for (int i = 0; i < names.u.a->n; i++)
+					if (names.u.a->e[i].val.t == T_STR && !strcmp(names.u.a->e[i].val.u.s->s, tok.s)) {
+						release(names);
+						fail("Named argument $%s given twice", tok.s);
+					}
+				arr_push(names.u.a, mk_cstr(tok.s));
+				advance();
+				advance();
+			} else if (names.t != T_NULL) {
+				release(names);
+				fail("Cannot use positional argument after named argument");
+			}
 			expr_assign();
 			(*argc)++;
 		} while (accept(","));
 	}
 	expect(")");
+	argNamesConst = names.t == T_NULL ? -1 : add_const(names);
+}
+
+static void emit_argnames(void) {
+	if (argNamesConst < 0) return;
+	emit2(OP_ARGNAMES, argNamesConst);
+	argNamesConst = -1;
 }
 
 static void compile_call(const char *name) {
@@ -1612,12 +1658,14 @@ static void compile_call(const char *name) {
 	}
 	call_args(&argc);
 	if (b >= 0) {
+		if (argNamesConst >= 0) fail("Named arguments are not supported for built-in functions like %s()", name);
 		int mn, mx;
 		builtin_arity(b, &mn, &mx);
 		if (argc < mn || (mx >= 0 && argc > mx)) fail("Wrong argument count for %s()", name);
 		emit(OP_CALLB); emit(b); emit(argc);
 	} else {
 		int f = func_index(name, 1);
+		emit_argnames();
 		emit(OP_CALL); emit(f); emit(argc);
 	}
 }
@@ -1699,6 +1747,10 @@ static void primary(void) {
 		emit(OP_NULL);              /* expression value, never reached */
 		return;
 	}
+	if (!strcasecmp(name, "match") && peek()->t == TK_OP && !strcmp(peek()->s, "(")) {
+		compile_match();
+		return;
+	}
 	if (!strcasecmp(name, "throw")) {     /* PHP 8: throw is an expression */
 		advance();
 		expr_assign();
@@ -1732,6 +1784,7 @@ static void primary(void) {
 		advance();
 		int argc = 0;
 		if (is_op("(")) call_args(&argc);
+		emit_argnames();
 		emit(OP_NEW); emit(cr); emit(argc);
 		rvalue_postfix();
 		return;
@@ -1765,6 +1818,7 @@ static void primary(void) {
 		} else if (is_op("(")) {
 			int argc;
 			call_args(&argc);
+			emit_argnames();
 			emit(OP_SCALL); emit(cr); emit(add_const(mk_cstr(member))); emit(argc);
 		} else {
 			emit(OP_CCONST); emit(cr); emit(add_const(mk_cstr(member)));
@@ -2394,6 +2448,57 @@ static void compile_function(void) {
 	patch(skip);
 }
 
+/* match (subject) { a, b => x, default => y }: strict comparison (===);
+ * the subject stays on the stack while the conditions are tested, the arm
+ * that matches pops it and leaves its result. Without a match and default:
+ * UnhandledMatchError. */
+static void compile_match(void) {
+	advance();                             /* match */
+	expect("(");
+	expr();
+	expect(")");
+	expect("{");
+	int ends[JUMPS_MAX], nends = 0, defaultAt = -1;
+	while (!is_op("}")) {
+		if (tok.t == TK_EOF) syntax_error();
+		if (nends >= JUMPS_MAX) fail("Too many match arms");
+		if (is_kw("default")) {
+			if (defaultAt >= 0) fail("Match expressions may only contain one default arm");
+			advance();
+			expect("=>");
+			int skip = emit_jump(OP_JMP);
+			defaultAt = ncode;
+			emit(OP_POP);
+			expr_assign();
+			ends[nends++] = emit_jump(OP_JMP);
+			patch(skip);
+		} else {
+			int hits[JUMPS_MAX], nhits = 0;
+			do {
+				if (is_op("=>")) break;            /* trailing comma */
+				if (nhits >= JUMPS_MAX) fail("Too many match conditions");
+				emit(OP_DUP);
+				expr_assign();
+				emit(OP_IDENT);
+				hits[nhits++] = emit_jump(OP_JNZ);
+			} while (accept(","));
+			expect("=>");
+			int next = emit_jump(OP_JMP);
+			for (int i = 0; i < nhits; i++) patch(hits[i]);
+			emit(OP_POP);
+			expr_assign();
+			ends[nends++] = emit_jump(OP_JMP);
+			patch(next);
+		}
+		if (!accept(",")) break;
+	}
+	expect("}");
+	if (defaultAt >= 0) emit2(OP_JMP, defaultAt);
+	else { emit(OP_CALLB); emit(find_builtin("__match_error")); emit(1); }
+	for (int i = 0; i < nends; i++) patch(ends[i]);
+	rvalue_postfix();
+}
+
 /* function (...) use (...) { ... } or fn (...) => expr as a value */
 static void compile_closure(int arrow) {
 	advance();                             /* function / fn */
@@ -2497,6 +2602,26 @@ static void compile_class(int kind, int isAbstract) {
 	k->isAbstract = isAbstract;
 	k->line = tok.line;
 	advance();
+	if (compilingEnum) {
+		compilingEnum = 0;
+		k->isEnum = 1;
+		if (accept(":")) {                     /* backed enum: int or string */
+			if (is_kw("int")) k->enumType = 1;
+			else if (is_kw("string")) k->enumType = 2;
+			else fail("Enum backing type must be int or string");
+			advance();
+		}
+		if (is_kw("extends")) fail("Enums cannot extend other classes");
+		/* every enum is a UnitEnum, backed ones a BackedEnum; name / value */
+		if (k->nifaces < CLIST_MAX) strcpy(k->ifaceNames[k->nifaces++], k->enumType ? "BackedEnum" : "UnitEnum");
+		const char *pn[2] = { "name", "value" };
+		for (int i = 0; i < (k->enumType ? 2 : 1); i++) {
+			CProp *pr = &k->own[k->nown++];
+			memset(pr, 0, sizeof *pr);
+			strcpy(pr->name, pn[i]);
+			pr->vis = VIS_PUBLIC;
+		}
+	}
 	if (kind == K_CLASS && is_kw("extends")) {
 		advance();
 		if (tok.t != TK_ID) syntax_error();
@@ -2511,6 +2636,32 @@ static void compile_class(int kind, int isAbstract) {
 	expect("{");
 	while (!is_op("}")) {
 		if (tok.t == TK_EOF) syntax_error();
+		if (k->isEnum && is_kw("case")) {
+			advance();
+			if (tok.t != TK_ID) syntax_error();
+			for (int i = 0; i < k->ncases; i++)
+				if (!strcmp(k->cases[i].name, tok.s)) fail("Cannot redeclare case %s::%s", k->name, tok.s);
+			EnumCase *nc = realloc(k->cases, (k->ncases + 1) * sizeof(EnumCase));
+			if (!nc) fail("Out of memory");
+			k->cases = nc;
+			EnumCase *ec = &k->cases[k->ncases];
+			memset(ec, 0, sizeof *ec);
+			snprintf(ec->name, sizeof ec->name, "%.31s", tok.s);
+			advance();
+			if (accept("=")) {
+				if (!k->enumType) fail("Case %s of pure enum %s must not have a value", ec->name, k->name);
+				if (!const_value(&ec->val)) fail("Enum case value must be a constant");
+				if ((k->enumType == 1 && ec->val.t != T_INT) || (k->enumType == 2 && ec->val.t != T_STR)) {
+					release(ec->val);
+					fail("Enum case type does not match enum backing type");
+				}
+				for (int i = 0; i < k->ncases; i++)
+					if (strict_eq(k->cases[i].val, ec->val)) { release(ec->val); fail("Duplicate value in enum %s", k->name); }
+			} else if (k->enumType) fail("Case %s of backed enum %s must have a value", ec->name, k->name);
+			k->ncases++;
+			expect(";");
+			continue;
+		}
 		if (is_kw("use")) {
 			if (kind == K_INTERFACE) fail("Interfaces cannot use traits");
 			advance();
@@ -2552,6 +2703,7 @@ static void compile_class(int kind, int isAbstract) {
 			continue;
 		}
 		if (kind == K_INTERFACE) fail("Interfaces may not include properties");
+		if (k->isEnum) fail("Enums may not include properties");
 		skip_type_hint();
 		do {
 			if (tok.t != TK_VAR) syntax_error();
@@ -2671,6 +2823,7 @@ static void statement(void) {
 		if (is_kw("class") && peek()->t == TK_ID) { compile_class(K_CLASS, 0); return; }
 		if (is_kw("interface") && peek()->t == TK_ID) { compile_class(K_INTERFACE, 0); return; }
 		if (is_kw("trait") && peek()->t == TK_ID) { compile_class(K_TRAIT, 0); return; }
+		if (is_kw("enum") && peek()->t == TK_ID) { compilingEnum = 1; compile_class(K_CLASS, 0); return; }
 		if (is_kw("const")) {
 			advance();
 			do {
@@ -2790,6 +2943,10 @@ static int   nframes;
 static int   pc, curPc;
 static Value *refArg;               /* by-reference argument of builtins   */
 
+/* named arguments of the next call (array of names, null = positional) */
+static Value argNames;
+static int   haveArgNames;
+
 /* exception handlers installed by OP_TRY */
 #define HANDLERS_MAX 64
 typedef struct { int pc, nframes, sp, nscratch; } Handler;
@@ -2863,6 +3020,7 @@ static void scratch_pop(int n) { nscratch -= n; }
 
 static void vm_reset(void) {
 	nhandlers = 0;
+	haveArgNames = 0;
 	if (excPending) { release(pendingExc); excPending = 0; }
 	while (nscratch > 0) { nscratch--; free(scratch[nscratch].p); release(scratch[nscratch].v); }
 	while (sp > 0) release(stack[--sp]);
@@ -2979,6 +3137,7 @@ static Value *lval_slot(int sc, int slot, Value *keys, int n) {
 	for (int i = 0; i < n; i++) {
 		if (keys[i].t == T_PNAME) {
 			if (p->t != T_OBJ) fail("Attempt to assign property \"%s\" on %s", keys[i].u.s->s, type_name(*p));
+			if (classes[p->u.o->cls].isEnum) fail("Cannot modify readonly property %s::$%s", classes[p->u.o->cls].name, keys[i].u.s->s);
 			p = obj_prop(p->u.o, keys[i], 1);
 			continue;
 		}
@@ -3100,8 +3259,43 @@ static Value cast(Value v, int t) {
 typedef Value (*BuiltinFn)(Value *a, int n);
 static BuiltinFn builtin_fn(int b);
 
+
+/* sort the argc arguments on the stack into parameter order; missing
+ * optional ones get their default. Returns the new argument count. */
+static int apply_arg_names(Func *fn, int argc) {
+	Arr *nm = argNames.u.a;
+	int base = sp - argc, slot[PARAMS_MAX * 2], have[PARAMS_MAX] = { 0 };
+	haveArgNames = 0;
+	if (argc > PARAMS_MAX * 2) fail("Too many arguments to %s()", fn->name);
+	for (int i = 0; i < argc; i++) {
+		Value name = i < nm->n ? nm->e[i].val : mk_null();
+		int p = -1;
+		if (name.t == T_NULL) p = i < fn->nparams ? i : -1;
+		else {
+			for (int k = 0; k < fn->nparams && fn->localNames; k++)
+				if (!strcmp(fn->localNames[k], name.u.s->s)) p = k;
+			if (p < 0) fail("Unknown named parameter $%s", name.u.s->s);
+			if (have[p]) fail("Named parameter $%s overwrites previous argument", name.u.s->s);
+		}
+		slot[i] = p;
+		if (p >= 0) have[p] = 1;
+	}
+	for (int k = 0; k < fn->nrequired; k++)
+		if (!have[k]) fail("Too few arguments to %s(): $%s not passed", fn->name, fn->localNames ? fn->localNames[k] : "?");
+	Value v[PARAMS_MAX];
+	for (int k = 0; k < fn->nparams; k++) { v[k] = fn->defs[k]; retain(v[k]); }
+	for (int i = 0; i < argc; i++) {
+		if (slot[i] >= 0) { release(v[slot[i]]); v[slot[i]] = stack[base + i]; }
+		else release(stack[base + i]);
+	}
+	sp = base;
+	for (int k = 0; k < fn->nparams; k++) push(v[k]);
+	return fn->nparams;
+}
+
 static void enter_func(int f, int argc, Value thisv, int cls, int scls, int ctor) {
 	Func *fn = &funcs[f];
+	if (haveArgNames) argc = apply_arg_names(fn, argc);
 	if (argc < fn->nrequired) { release(thisv); fail("Too few arguments to %s()", fn->name); }
 	while (argc > fn->nparams) { release(pop()); argc--; }
 	int base = sp - argc;
@@ -3166,6 +3360,7 @@ static void invoke(int argc) {
 			int b = find_builtin(name);
 			release(callee);
 			if (b < 0) fail("Call to undefined function %s()", name);
+			if (haveArgNames) { haveArgNames = 0; fail("Named arguments are not supported for built-in functions like %s()", name); }
 			int mn, mx;
 			builtin_arity(b, &mn, &mx);
 			if (builtin_takes_ref(b)) fail("%s() cannot be called this way", name);
@@ -3206,6 +3401,24 @@ static void invoke(int argc) {
 	else if (viaClass) fail("Non-static method %s::%s() cannot be called statically", classes[c].name, m->name);
 	enter_func(m->func, argc, thisv, m->decl, c, 0);
 }
+
+/* --- enums --- */
+
+/* the singleton object of case i (with a new reference) */
+static Value enum_case(int c, int i) {
+	EnumCase *ec = &classes[c].cases[i];
+	if (ec->obj.t == T_NULL) {
+		ec->obj = new_object(c);
+		int p = find_prop(c, "name");
+		if (p >= 0) { release(ec->obj.u.o->props[p]); ec->obj.u.o->props[p] = mk_cstr(ec->name); }
+		p = find_prop(c, "value");
+		if (p >= 0) { release(ec->obj.u.o->props[p]); ec->obj.u.o->props[p] = ec->val; retain(ec->val); }
+	}
+	retain(ec->obj);
+	return ec->obj;
+}
+
+static int is_enum_obj(Value v) { return v.t == T_OBJ && classes[v.u.o->cls].isEnum; }
 
 /* --- exceptions --- */
 
@@ -3298,6 +3511,45 @@ static Value call_now(Value callee, Value *args, int n) {
 	pc = savedPc;
 	curPc = savedCur;
 	return pop();
+}
+
+/* Enum::cases(), Enum::from($v), Enum::tryFrom($v); 1 = handled */
+static void dbg_fmt(Value v, char *out, int size, int depth);
+static void throw_new(const char *cls, const char *msg) __attribute__((noreturn));
+
+static int enum_static(int c, const char *name, int argc) {
+	Class *k = &classes[c];
+	if (haveArgNames) { haveArgNames = 0; fail("Named arguments are not supported for %s::%s()", k->name, name); }
+	if (!strcasecmp(name, "cases")) {
+		pop_n(argc);
+		Value r = mk_arr();
+		for (int i = 0; i < k->ncases; i++) arr_push(r.u.a, enum_case(c, i));
+		push(r);
+		return 1;
+	}
+	int tryFrom = !strcasecmp(name, "tryFrom");
+	if (!k->enumType || (!tryFrom && strcasecmp(name, "from"))) return 0;
+	if (argc != 1) fail("%s::%s() expects exactly 1 argument", k->name, name);
+	Value v = stack[sp - 1];
+	for (int i = 0; i < k->ncases; i++) {
+		Value cv = k->cases[i].val;
+		int hit;
+		if (k->enumType == 1) {
+			Value num;
+			hit = (v.t == T_INT && v.u.i == cv.u.i) || (v.t == T_FLOAT && v.u.f == (float)cv.u.i) ||
+			      (v.t == T_STR && numeric_str(v.u.s, &num) && num.t == T_INT && num.u.i == cv.u.i);
+		} else {
+			int l;
+			const char *sv = v.t == T_STR || v.t == T_INT || v.t == T_FLOAT ? sval(v, &l) : NULL;
+			hit = sv && l == cv.u.s->len && !memcmp(sv, cv.u.s->s, l);
+		}
+		if (hit) { pop_n(1); push(enum_case(c, i)); return 1; }
+	}
+	if (tryFrom) { pop_n(1); push(mk_null()); return 1; }
+	char vs[40], msg[80];
+	dbg_fmt(v, vs, sizeof vs, 1);
+	snprintf(msg, sizeof msg, "%s is not a valid backing value for enum %s", vs, k->name);
+	throw_new("ValueError", msg);
 }
 
 /* run a method to completion right now (used for __toString) */
@@ -3542,6 +3794,7 @@ static void exec_one(void) {
 		int c = resolve_cref(cr);
 		Class *k = &classes[c];
 		if (k->kind != K_CLASS) fail("Cannot instantiate %s %s", kind_name(k->kind), k->name);
+		if (k->isEnum) fail("Cannot instantiate enum %s", k->name);
 		if (k->isAbstract) fail("Cannot instantiate abstract class %s", k->name);
 		Value o = new_object(c);
 		if (throwableClass >= 0 && is_a(c, throwableClass)) set_exc_origin(o);
@@ -3553,6 +3806,7 @@ static void exec_one(void) {
 			}
 			enter_func(m->func, argc, o, m->decl, c, 1);
 		} else {
+			if (haveArgNames) { haveArgNames = 0; release(o); fail("%s has no constructor for named arguments", k->name); }
 			pop_n(argc);
 			push(o);
 		}
@@ -3581,6 +3835,7 @@ static void exec_one(void) {
 		const char *name = consts[ni].u.s->s;
 		int c = resolve_cref(cr);
 		CMethod *m = find_method(c, name);
+		if (!m && classes[c].isEnum && enum_static(c, name, argc)) return;
 		if (!m) fail("Call to undefined method %s::%s()", classes[c].name, name);
 		if (!can_access(m->vis, m->decl))
 			fail("Call to %s method %s::%s()", vis_name(m->vis), classes[c].name, m->name);
@@ -3603,6 +3858,10 @@ static void exec_one(void) {
 		int cr = code[pc++], ni = code[pc++];
 		int c = resolve_cref(cr);
 		CConst *k = find_cconst(c, consts[ni].u.s->s);
+		if (!k && classes[c].isEnum) {
+			for (int i = 0; i < classes[c].ncases; i++)
+				if (!strcmp(classes[c].cases[i].name, consts[ni].u.s->s)) { push(enum_case(c, i)); return; }
+		}
 		if (!k) fail("Undefined constant %s::%s", classes[c].name, consts[ni].u.s->s);
 		retain(k->val);
 		push(k->val);
@@ -3625,6 +3884,7 @@ static void exec_one(void) {
 	case OP_CLONE: {
 		a = pop();
 		if (a.t != T_OBJ) { release(a); fail("__clone method called on non-object"); }
+		if (is_enum_obj(a)) { release(a); fail("Trying to clone an uncloneable object of class %s", classes[a.u.o->cls].name); }
 		Obj *o = a.u.o;
 		Value cv = new_object(o->cls);
 		for (int i = 0; i < o->nprops; i++) {
@@ -3691,6 +3951,10 @@ static void exec_one(void) {
 		push(mk_bool(c >= 0 && e.t == T_OBJ && is_a(e.u.o->cls, c)));
 		return;
 	}
+	case OP_ARGNAMES:
+		argNames = consts[code[pc++]];
+		haveArgNames = 1;
+		return;
 	case OP_JSR:
 		push(mk_int(pc + 1));
 		pc = code[pc];
@@ -3820,11 +4084,21 @@ static void dump(Buf *b, Value v, int indent, int varDump) {
 		buf_adds(b, varDump ? "}\n" : ")\n");
 		return;
 	}
+	if (v.t == T_OBJ && varDump && classes[v.u.o->cls].isEnum) {
+		int p = find_prop(v.u.o->cls, "name");
+		for (int i = 0; i < indent; i++) buf_add(b, " ", 1);
+		buf_adds(b, "enum(");
+		buf_adds(b, classes[v.u.o->cls].name);
+		buf_adds(b, "::");
+		if (p >= 0 && v.u.o->props[p].t == T_STR) buf_adds(b, v.u.o->props[p].u.s->s);
+		buf_adds(b, ")\n");
+		return;
+	}
 	if (v.t == T_OBJ) {
 		Obj *o = v.u.o;
 		Class *k = &classes[o->cls];
 		int n = o->nprops + (o->dyn ? o->dyn->n : 0);
-		if (!varDump) { buf_adds(b, k->name); buf_adds(b, " Object\n"); for (int i = 0; i < indent; i++) buf_add(b, " ", 1); buf_adds(b, "(\n"); }
+		if (!varDump) { buf_adds(b, k->name); buf_adds(b, k->isEnum ? " Enum\n" : " Object\n"); for (int i = 0; i < indent; i++) buf_add(b, " ", 1); buf_adds(b, "(\n"); }
 		else { for (int i = 0; i < indent; i++) buf_add(b, " ", 1); snprintf(t, sizeof t, "object(%.20s)#%d (%d) {\n", k->name, o->id, n); buf_adds(b, t); }
 		for (int i = 0; i < n; i++) {
 			const char *pn;
@@ -4581,6 +4855,28 @@ BI(shuffle) {
 	for (int i = 0; i < arr->n; i++) { release(arr->e[i].key); arr->e[i].key = mk_int(i); }
 	arr->next = arr->n;
 	return mk_bool(1);
+}
+
+/* --- match --- */
+
+static void dbg_fmt(Value v, char *out, int size, int depth);
+
+static void throw_new(const char *cls, const char *msg) __attribute__((noreturn));
+static void throw_new(const char *cls, const char *msg) {
+	int c = find_class(cls);
+	if (c < 0) fail("%s", msg);
+	Value o = new_object(c);
+	set_prop(o, "message", mk_cstr(msg));
+	set_exc_origin(o);
+	throw_value(o);
+}
+
+BI(__match_error) {
+	UNUSED;
+	char v[48], msg[80];
+	dbg_fmt(a[0], v, sizeof v, 1);
+	snprintf(msg, sizeof msg, "Unhandled match case %s", v);
+	throw_new("UnhandledMatchError", msg);
 }
 
 /* --- callbacks --- */
@@ -5418,6 +5714,10 @@ static int json_enc(Buf *b, Value v, int flags, int depth) {
 		return 1;
 	}
 	case T_OBJ: {
+		if (classes[v.u.o->cls].isEnum) {          /* backed enum: its value */
+			int p = find_prop(v.u.o->cls, "value");
+			return p >= 0 && json_enc(b, v.u.o->props[p], flags, depth + 1);
+		}
 		/* public properties as a JSON object */
 		Obj *o = v.u.o;
 		Class *k = &classes[o->cls];
@@ -5642,7 +5942,7 @@ static const Builtin builtins[] = {
 	{ "array_map", bi_array_map, 2, -1, 0 }, { "array_filter", bi_array_filter, 1, 3, 0 },
 	{ "array_reduce", bi_array_reduce, 2, 3, 0 },
 	{ "call_user_func", bi_call_user_func, 1, -1, 0 }, { "call_user_func_array", bi_call_user_func_array, 2, 2, 0 },
-	{ "is_callable", bi_is_callable, 1, 1, 0 }, { "function_exists", bi_function_exists, 1, 1, 0 },
+	{ "is_callable", bi_is_callable, 1, 1, 0 }, { "__match_error", bi___match_error, 1, 1, 0 }, { "function_exists", bi_function_exists, 1, 1, 0 },
 	{ "cls", bi_cls, 0, 0, 0 }, { "locate", bi_locate, 2, 2, 0 }, { "color", bi_color, 1, 1, 0 },
 	{ "input", bi_input, 0, 1, 0 }, { "inkey", bi_inkey, 0, 0, 0 }, { "joy", bi_joy, 0, 0, 0 },
 	{ "swap_screens", bi_swap_screens, 0, 1, 0 }, { "touch", bi_touch, 0, 0, 0 },
@@ -5714,6 +6014,8 @@ static int find_constant(const char *name, Value *out) {
  * hierarchy of PHP 8 */
 static const char preludeSrc[] =
 	"interface Throwable {}\n"
+	"interface UnitEnum {}\n"
+	"interface BackedEnum extends UnitEnum {}\n"
 	"trait ThrowableMethods {\n"
 	"  protected $message = ''; protected $code = 0; protected $file = ''; protected $line = 0;\n"
 	"  protected $previous = null;\n"
@@ -5749,7 +6051,8 @@ static const char preludeSrc[] =
 	"class OverflowException extends RuntimeException {}\n"
 	"class RangeException extends RuntimeException {}\n"
 	"class UnderflowException extends RuntimeException {}\n"
-	"class UnexpectedValueException extends RuntimeException {}\n";
+	"class UnexpectedValueException extends RuntimeException {}\n"
+	"class UnhandledMatchError extends Error {}\n";
 
 static void compile_prelude(void) {
 	jmp_buf outer;
