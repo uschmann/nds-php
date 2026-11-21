@@ -254,12 +254,29 @@ static bool input_key(int k) {
 }
 
 /* draw the input buffer into a screen starting at (x,y); returns cursor pos */
+static bool inputCode;             /* REPL prompt: colour the input like code */
+static void highlight(const char *t, int l, u8 *col);
+
 static void input_draw(Screen *s, int x, int y, int clearLen, int *cx, int *cy) {
 	int pos = y * COLS + x;
+	u8 colors[INPUT_MAX + 1];
+	if (inputCode) {
+		highlight(inbuf, inlen, colors);
+		/* REPL commands (RUN, SAVE "X" ...) in the keyword colour */
+		static const char *const cmds[] = { "RUN", "NEW", "CLR", "LIST", "SAVE", "LOAD", "DIR", "DELETE",
+		                                    "EXIT", "EDIT", "FILES", "RMFILE", "RENAME", "SPRED", "SNDED", NULL };
+		int w = 0;
+		while (w < inlen && isalpha((unsigned char)inbuf[w])) w++;
+		for (int k = 0; cmds[k] && w; k++)
+			if ((int)strlen(cmds[k]) == w && !strncasecmp(inbuf, cmds[k], w) &&
+			    (w == inlen || inbuf[w] == ' ' || inbuf[w] == '"' || inbuf[w] == '\''))
+				for (int i = 0; i < w; i++) colors[i] = RED;
+	}
 	for (int i = 0; i < clearLen; i++) {
 		int p = pos + i;
 		if (p >= ROWS * COLS) break;
-		scr_put(s, p % COLS, p / COLS, i < inlen ? inbuf[i] : ' ', i < inlen ? tcol : TEXTCOL, NOFILL);
+		u8 c = i >= inlen ? TEXTCOL : inputCode ? colors[i] : tcol;
+		scr_put(s, p % COLS, p / COLS, i < inlen ? inbuf[i] : ' ', c, NOFILL);
 	}
 	int p = pos + incur;
 	*cx = p % COLS;
@@ -610,6 +627,12 @@ static u8 word_color(const char *t, int l, int i, int j) {
 	/* name: value in a call (not "a ? b : c", not "::") */
 	if (k < l && t[k] == ':' && !beforeColons && p >= 0 && (t[p] == '(' || t[p] == ',')) return BROWN;
 	if (beforeColons) return CYAN;                            /* Class::  */
+	/* new Name(...), instanceof Name */
+	if (p >= 2) {
+		int e = p + 1, b = e;
+		while (b > 0 && ident_ch(t[b - 1])) b--;
+		if ((e - b == 3 && !strncasecmp(t + b, "new", 3)) || (e - b == 10 && !strncasecmp(t + b, "instanceof", 10))) return CYAN;
+	}
 	if (!call && p >= 0 && t[p] == ':' && (p == 0 || t[p - 1] != ':') && is_type_name(t + i, n)) return CYAN;
 	bool upper = false, lower = false;
 	for (int q = i; q < j; q++) {
@@ -740,6 +763,7 @@ static void open_sound_editor(int slot);
 
 /* place the line input at the end of the terminal output */
 static void begin_line_input(const char *prompt) {
+	inputCode = prompt[0] == '>';          /* REPL: code; input(): plain text */
 	if (tx) term_newline();
 	u8 saved = tcol;
 	tcol = RED;

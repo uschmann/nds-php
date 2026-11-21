@@ -2854,6 +2854,7 @@ static void statement(void) {
 	/* REPL: an expression on its own shows its value ("= 42"), except
 	 * assignments and calls that print themselves */
 	int show = directCompile && !scope && !is_kw("print");
+	assignEnd = outputCallEnd = -1;
 	expr();
 	if (show && assignEnd != ncode && outputCallEnd != ncode) emit(OP_SHOWVAL);
 	else emit(OP_POP);
@@ -3414,6 +3415,110 @@ static void invoke(int argc) {
 	enter_func(m->func, argc, thisv, m->decl, c, 0);
 }
 
+/* --- REPL: show a value with colours (like the editor's highlighting) --- */
+
+static int textColor;                     /* colour set with color(), 0 = default */
+enum { HC_TEXT = 0, HC_KW = 2, HC_CLASS = 3, HC_STR = 5, HC_PROP = 6, HC_NUM = 8, HC_PUNCT = 12 };
+
+/* the formatter either measures (b != NULL) or prints in colour */
+typedef struct { Buf *b; } Sink;
+
+static void sk(Sink *s, const char *t, int color) {
+	if (s->b) { buf_adds(s->b, t); return; }
+	if (io->color) io->color(color);
+	outs(t);
+}
+
+static void show_value(Sink *s, Value v, int depth, int multi);
+
+static void show_key_value(Sink *s, Value key, Value val, int list, int depth) {
+	if (!list) {
+		show_value(s, key, depth + 1, 0);
+		sk(s, " => ", HC_PUNCT);
+	}
+	show_value(s, val, depth + 1, 0);
+}
+
+/* multi: one element per line (top level of long arrays / objects) */
+static void show_value(Sink *s, Value v, int depth, int multi) {
+	char t[48];
+	switch (v.t) {
+	case T_NULL: sk(s, "null", HC_KW); return;
+	case T_BOOL: sk(s, v.u.i ? "true" : "false", HC_KW); return;
+	case T_INT: snprintf(t, sizeof t, "%d", v.u.i); sk(s, t, HC_NUM); return;
+	case T_FLOAT: fmt_float(t, v.u.f); if (!strpbrk(t, ".EN")) strcat(t, ".0"); sk(s, t, HC_NUM); return;
+	case T_STR: {
+		char q[72];
+		snprintf(q, sizeof q, v.u.s->len > 60 ? "\"%.57s...\"" : "\"%s\"", v.u.s->s);
+		sk(s, q, HC_STR);
+		return;
+	}
+	case T_CLO: sk(s, "Closure", HC_CLASS); return;
+	case T_ARR: {
+		Arr *a = v.u.a;
+		int list = 1;
+		for (int i = 0; i < a->n && list; i++) list = a->e[i].key.t == T_INT && a->e[i].key.u.i == i;
+		if (depth > 2 && a->n) { snprintf(t, sizeof t, "[...%d]", a->n); sk(s, t, HC_PUNCT); return; }
+		sk(s, "[", HC_PUNCT);
+		for (int i = 0; i < a->n; i++) {
+			if (multi) sk(s, "\n  ", HC_TEXT);
+			else if (i) sk(s, ", ", HC_PUNCT);
+			show_key_value(s, a->e[i].key, a->e[i].val, list, depth);
+			if (multi) sk(s, ",", HC_PUNCT);
+		}
+		sk(s, multi ? "\n]" : "]", HC_PUNCT);
+		return;
+	}
+	case T_OBJ: {
+		Obj *o = v.u.o;
+		Class *k = &classes[o->cls];
+		if (k->isEnum) {
+			int p = find_prop(o->cls, "name");
+			sk(s, k->name, HC_CLASS);
+			sk(s, "::", HC_PUNCT);
+			sk(s, p >= 0 && o->props[p].t == T_STR ? o->props[p].u.s->s : "?", HC_PROP);
+			return;
+		}
+		sk(s, k->name, HC_CLASS);
+		if (depth > 2) { sk(s, "{...}", HC_PUNCT); return; }
+		sk(s, " {", HC_PUNCT);
+		int n = o->nprops + (o->dyn ? o->dyn->n : 0);
+		for (int i = 0; i < n; i++) {
+			const char *pn;
+			Value pv;
+			if (i < o->nprops) { pn = k->props[i].name; pv = o->props[i]; }
+			else { Entry *e = &o->dyn->e[i - o->nprops]; pn = e->key.t == T_STR ? e->key.u.s->s : "?"; pv = e->val; }
+			if (multi) sk(s, "\n  ", HC_TEXT);
+			else if (i) sk(s, ", ", HC_PUNCT);
+			sk(s, pn, HC_PROP);
+			sk(s, ": ", HC_PUNCT);
+			show_value(s, pv, depth + 1, 0);
+			if (multi) sk(s, ",", HC_PUNCT);
+		}
+		sk(s, multi ? "\n}" : "}", HC_PUNCT);
+		return;
+	}
+	default: sk(s, "?", HC_TEXT);
+	}
+}
+
+/* "= value": arrays and objects that do not fit on a line get one line
+ * per element */
+static void show_result(Value v) {
+	Buf b = { 0 };
+	Sink m = { &b };
+	show_value(&m, v, 0, 0);
+	int len = b.n;
+	free(b.p);
+	int multi = (v.t == T_ARR || (v.t == T_OBJ && !classes[v.u.o->cls].isEnum)) && len > io->width - 3;
+	Sink out = { NULL };
+	if (col) out_ch('\n');
+	sk(&out, "= ", HC_PUNCT);
+	show_value(&out, v, 0, multi);
+	out_ch('\n');
+	if (io->color) io->color(textColor);
+}
+
 /* --- enums --- */
 
 /* the singleton object of case i (with a new reference) */
@@ -3964,15 +4069,8 @@ static void exec_one(void) {
 		return;
 	}
 	case OP_SHOWVAL: {
-		char t[200];
 		a = pop();
-		if (a.t != T_NULL) {
-			dbg_fmt(a, t, sizeof t, 0);
-			if (col) out_ch('\n');
-			outs("= ");
-			outs(t);
-			out_ch('\n');
-		}
+		if (a.t != T_NULL) show_result(a);
 		release(a);
 		return;
 	}
@@ -5281,6 +5379,7 @@ BI(color) {
 	int c = to_int(a[0]);
 	if (c < 0 || c > 15) fail("color(): colour must be 0-15");
 	if (io->color) io->color(c);
+	textColor = c;
 	return mk_null();
 }
 BI(input) {

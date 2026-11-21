@@ -80,8 +80,10 @@ then your own names before built-in ones. There are no suggestions inside string
 **REPL console:** it shows the program output and has a `>` prompt where you run single PHP
 statements right away (`echo 2 + 3;`, `$x = strlen("abc");`) or type commands such as `RUN`,
 `SAVE "NAME"` and `LOAD "NAME"`. An expression without `echo` shows its result right away
-(`1 + 2` → `= 3`, `strtoupper("ds")` → `= "DS"`, arrays briefly as `[1, 2]`); assignments, `null` and
-functions that print themselves (`printf`, `print_r` …) stay quiet. ↑↓ bring back earlier input. `START` or `RUN` start the program from
+(`1 + 2` → `= 3`, `strtoupper("ds")` → `= "DS"`, arrays briefly as `[1, 2]`, long arrays and objects with one element per line, all coloured like
+in the editor); assignments, `null` and
+functions that print themselves (`printf`, `print_r` …) stay quiet. The input is highlighted like code in the editor, commands such as `RUN` in red. ↑↓
+bring back earlier input. `START` or `RUN` start the program from
 the editor and switch to the console for it.
 
 **Language:** the user interface (title screen, hints, help page) follows the system language of the DS.
