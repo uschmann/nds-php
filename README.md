@@ -46,7 +46,7 @@ zwischen beiden.
 | Ganze Zeile löschen | `CLR` | X (im Editor) |
 | Zeile duplizieren (Kopie darunter, Cursor auf der Kopie) | – | Y (im Editor) |
 | Großbuchstaben und Zweitbelegung (2× tippen = Lock) | `SHFT` | L / R halten |
-| Menü `⋮` (rechts in der Reiterleiste): Sprite-Editor, Sound-Editor, Debugger, Speichern | – | – |
+| Menü `⋮` (rechts in der Reiterleiste): Öffnen (Dateibrowser), Speichern, Debugger, Sprite-Editor, Sound-Editor, Exit (zum Titelbild) | – | – |
 | Sprite-Editor | – | X (in der REPL-Konsole) |
 | Sound-Editor | – | Y (in der REPL-Konsole) |
 
@@ -472,7 +472,7 @@ function greet($name) {
 
 ### Dateibrowser
 
-Ein Tipp auf das rote `<>`-Symbol links in der Reiterleiste öffnet den Dateibrowser. Er listet alle
+Ein Tipp auf das rote `<>`-Symbol links in der Reiterleiste oder `Öffnen` im Menü `⋮` öffnet den Dateibrowser. Er listet alle
 Programme auf der SD-Karte (mit Anzahl der Dateien); oben erscheint eine Vorschau des ausgewählten
 Programms mit seinen Dateien und dem Anfang von `main.php`.
 

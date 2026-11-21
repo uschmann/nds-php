@@ -45,7 +45,7 @@ The top screen is either the **code editor** or the **REPL console**; `SCRN` swi
 | Delete the whole line | `CLR` | X (in the editor) |
 | Duplicate the line (copy below, cursor on the copy) | – | Y (in the editor) |
 | Capitals and second symbols (tap twice = lock) | `SHFT` | hold L / R |
-| Menu `⋮` (right of the tab bar): sprite editor, sound editor, debugger, save | – | – |
+| Menu `⋮` (right of the tab bar): open (file browser), save, debugger, sprite editor, sound editor, exit (to the title screen) | – | – |
 | Sprite editor | – | X (in the REPL console) |
 | Sound editor | – | Y (in the REPL console) |
 
@@ -461,7 +461,7 @@ function greet($name) {
 
 ### File browser
 
-Tapping the red `<>` tile at the left of the tab row opens the file browser. It lists all programs on
+Tapping the red `<>` tile at the left of the tab row or `Open` in the `⋮` menu opens the file browser. It lists all programs on
 the SD card (with their number of files); the top screen previews the selected program with its files
 and the start of `main.php`.
 

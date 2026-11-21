@@ -211,24 +211,47 @@ static bool suggMore;
 
 /* menu below the three dots */
 #define MENU_MAX 8
-#define MENU_W   124
+#define MENU_W   140
 #define MENU_X   (252 - MENU_W)
 #define MENU_Y   21
-#define ITEM_H   20
+#define ITEM_H   18
+#define DIV_H    7                /* extra space for the divider line */
 static const char *menuItems[MENU_MAX];
-static int  menuN;
+static unsigned char menuIcons[MENU_MAX];
+static int  menuN, menuDivider = -1;
 static bool menuOpen;
 
+/* 8x8 icons, one byte per row, leftmost pixel = bit 7 */
+static const u8 icons[][8] = {
+	[KI_OPEN]   = { 0x00, 0x70, 0xFF, 0x81, 0x81, 0x81, 0xFF, 0x00 },   /* folder        */
+	[KI_SAVE]   = { 0xFE, 0xBB, 0xBB, 0x81, 0xBD, 0xA5, 0xBD, 0xFF },   /* floppy disk   */
+	[KI_DEBUG]  = { 0x24, 0x18, 0xBD, 0x7E, 0xFF, 0x7E, 0xBD, 0x18 },   /* bug           */
+	[KI_SPRITE] = { 0x24, 0x7E, 0xDB, 0xFF, 0xFF, 0x5A, 0x81, 0x42 },   /* pixel sprite  */
+	[KI_SOUND]  = { 0x3F, 0x21, 0x21, 0x21, 0x27, 0xE7, 0xE0, 0x00 },   /* music notes   */
+	[KI_EXIT]   = { 0xF0, 0x90, 0x84, 0xBE, 0x84, 0x90, 0xF0, 0x00 },   /* door + arrow  */
+};
+
+static void draw_icon(int x, int y, int id, u16 c) {
+	if (id <= KI_NONE || id > KI_EXIT) return;
+	for (int r = 0; r < 8; r++)
+		for (int b = 0; b < 8; b++)
+			if (icons[id][r] & (0x80 >> b)) fill(x + b, y + r, 1, 1, c);
+}
+
+static int menu_item_y(int i) { return MENU_Y + 2 + i * ITEM_H + (menuDivider >= 0 && i >= menuDivider ? DIV_H : 0); }
+static int menu_height(void) { return menuN * ITEM_H + 4 + (menuDivider >= 0 ? DIV_H : 0); }
+
 static void draw_menu(void) {
-	int h = menuN * ITEM_H + 4;
+	int h = menu_height();
 	fill(MENU_X + 2, MENU_Y + 3, MENU_W, h, C(22, 22, 21));        /* shadow */
 	fill(MENU_X, MENU_Y, MENU_W, h, COL_LINE);
 	fill(MENU_X + 1, MENU_Y + 1, MENU_W - 2, h - 2, COL_CARD);
 	fill(MENU_X + 1, MENU_Y + 1, 3, h - 2, COL_ACCENT);
 	for (int i = 0; i < menuN; i++) {
-		int y = MENU_Y + 2 + i * ITEM_H;
-		if (i) fill(MENU_X + 8, y, MENU_W - 12, 1, COL_LINE);
-		text(MENU_X + 12, y + 6, menuItems[i], COL_TEXT, 1);
+		int y = menu_item_y(i);
+		if (i == menuDivider) fill(MENU_X + 8, y - DIV_H / 2 - 1, MENU_W - 14, 2, COL_LINE);
+		draw_icon(MENU_X + 11, y + 5, menuIcons[i], i == menuN - 1 && menuIcons[i] == KI_EXIT ? COL_MUTED : COL_ACCENT);
+		text(MENU_X + 25, y + 5, menuItems[i], COL_TEXT, 1);
 	}
 }
 
@@ -236,9 +259,10 @@ static void draw_frame(void);
 static void draw_status(void);
 static void draw_all_keys(void);
 
-void kbd_open_menu(const char *const *items, int n) {
+void kbd_open_menu(const char *const *items, const unsigned char *ic, int n, int dividerBefore) {
 	menuN = n < MENU_MAX ? n : MENU_MAX;
-	for (int i = 0; i < menuN; i++) menuItems[i] = items[i];
+	menuDivider = dividerBefore > 0 && dividerBefore < menuN ? dividerBefore : -1;
+	for (int i = 0; i < menuN; i++) { menuItems[i] = items[i]; menuIcons[i] = ic ? ic[i] : KI_NONE; }
 	menuOpen = true;
 	draw_menu();
 }
@@ -393,8 +417,9 @@ int kbd_poll(bool touching, int px, int py, bool extShift) {
 		/* menu: a tap picks an entry or closes it */
 		if (touching && pressed == -1) {
 			pressed = -2;
-			if (px >= MENU_X && px < MENU_X + MENU_W && py >= MENU_Y + 2 && py < MENU_Y + 2 + menuN * ITEM_H)
-				result = KC_MENU_ITEM + (py - MENU_Y - 2) / ITEM_H;
+			if (px >= MENU_X && px < MENU_X + MENU_W)
+				for (int i = 0; i < menuN; i++)
+					if (py >= menu_item_y(i) && py < menu_item_y(i) + ITEM_H) result = KC_MENU_ITEM + i;
 			kbd_close_menu();
 			pressed = -2;
 		} else if (!touching) pressed = -1;

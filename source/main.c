@@ -1327,12 +1327,14 @@ static void debugger_frame(u32 down, u32 rep, bool touching, int px, int py) {
 /* entries of the "three dots" menu */
 static void menu_action(int item) {
 	BasicState st = basic_state();
+	/* 0 open (file browser), 1 save, 2 debugger, 3 sprites, 4 sounds, 5 exit */
 	if (item == 2) { open_debugger(); return; }
 	if (st != BASIC_IDLE) { set_status(L("ERST DAS PROGRAMM BEENDEN", "STOP THE PROGRAM FIRST"), RED); return; }
 	helpOpen = false;
-	if (item == 0) open_sprite_editor(spred_slot());
-	else if (item == 1) open_sound_editor(snded_slot());
-	else if (item == 3) {
+	if (item == 0) open_browser();
+	else if (item == 3) open_sprite_editor(spred_slot());
+	else if (item == 4) open_sound_editor(snded_slot());
+	else if (item == 1) {
 		/* save under the last name, or ask for one in the REPL */
 		if (basic_program_name()[0]) exec_line("SAVE");
 		else {
@@ -1340,7 +1342,7 @@ static void menu_action(int item) {
 			if (!replActive) repl_prompt();
 			input_set("SAVE \"");
 		}
-	}
+	} else if (item == 5) exec_line("EXIT");      /* back to the title screen, the program stays */
 }
 
 static void video_init(void) {
@@ -1530,10 +1532,11 @@ int main(int argc, char *argv[]) {
 				/* file tab: open that file in the editor */
 				if (st == BASIC_IDLE) { select_file(k - KC_TAB); view = VIEW_EDIT; }
 			} else if (k == KC_MENU) {
-				const char *items[4] = { L("Sprite-Editor", "Sprite editor"), L("Sound-Editor", "Sound editor"),
-				                         "Debugger", L("Speichern", "Save") };
-				kbd_open_menu(items, 4);
-			} else if (k >= KC_MENU_ITEM && k < KC_MENU_ITEM + 4) {
+				const char *items[6] = { L("\x99" "ffnen", "Open"), L("Speichern", "Save"), "Debugger",
+				                         L("Sprite-Editor", "Sprite editor"), L("Sound-Editor", "Sound editor"), "Exit" };
+				static const unsigned char ic[6] = { KI_OPEN, KI_SAVE, KI_DEBUG, KI_SPRITE, KI_SOUND, KI_EXIT };
+				kbd_open_menu(items, ic, 6, 5);
+			} else if (k >= KC_MENU_ITEM && k < KC_MENU_ITEM + 6) {
 				menu_action(k - KC_MENU_ITEM);
 			} else if (k == KC_BROWSER) {
 			if (st == BASIC_IDLE) { helpOpen = false; open_browser(); }
